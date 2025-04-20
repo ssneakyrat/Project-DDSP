@@ -36,8 +36,8 @@ inference:
   batch_size: 1
 train:
   batch_size: 16
-  epochs: 11
-  interval_log: 5
-  interval_save: 5
-  interval_val: 5
+  epochs: 1000000
+  interval_log: 100 # step
+  interval_save: 50 # epoch
+  interval_val: 50 # epoch
   lr: 0.002

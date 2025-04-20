@@ -177,7 +177,6 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
     best_loss = np.inf
     num_batches = len(loader_train)
     model.train()
-    prev_save_time = -1
     
     # Check for existing validation results to determine best_loss
     if os.path.exists(saver.path_log_value) and initial_global_step > 0:
@@ -197,7 +196,14 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
     saver.log_info('======= start training =======')
     saver.log_info(f'Starting from global step: {saver.global_step}')
     
-    for epoch in range(args.train.epochs):
+    # Calculate starting epoch
+    start_epoch = initial_global_step // num_batches if initial_global_step > 0 else 0
+    saver.log_info(f'Starting from epoch: {start_epoch}')
+    
+    for epoch in range(start_epoch, args.train.epochs):
+        saver.log_info(f'Beginning epoch {epoch}/{args.train.epochs}')
+        epoch_loss = 0.0
+        
         for batch_idx, data in enumerate(loader_train):
             saver.global_step_increment()
             optimizer.zero_grad()
@@ -221,8 +227,10 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
                 # backpropagate
                 loss.backward()
                 optimizer.step()
+                
+            epoch_loss += loss.item()
 
-            # log loss
+            # log loss - still do this by steps for more granular monitoring
             if saver.global_step % args.train.interval_log == 0:
                 saver.log_info(
                     'epoch: {}/{} {:3d}/{:3d} | {} | t: {:.2f} | loss: {:.6f} | time: {} | counter: {}'.format(
@@ -256,41 +264,46 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
                     'train loss mss': loss_mss.item(),
                     'train loss f0': loss_f0.item(),
                 })
-            
-            # validation
-            cur_hour = saver.get_total_time(to_str=False) // 3600
-            if cur_hour != prev_save_time:
-                # save latest
-                saver.save_models(
-                        {'vocoder': model}, postfix=f'{saver.global_step}_{cur_hour}')
-
-                prev_save_time = cur_hour
-                # run testing set
-                path_testdir_runtime = os.path.join(
-                        args.env.expdir,
-                        'runtime_gen', 
-                        f'gen_{saver.global_step}_{cur_hour}')
-                test_loss, test_loss_mss, test_loss_f0 = test(
-                    args, model, loss_func, loader_test,
-                    path_gendir=path_testdir_runtime)
-                saver.log_info(
-                    ' --- <validation> --- \nloss: {:.6f}. mss loss: {:.6f}, f0: {:.6f}'.format(
-                        test_loss, test_loss_mss, test_loss_f0
-                    )
+        
+        # End of epoch processing
+        avg_epoch_loss = epoch_loss / num_batches
+        saver.log_info(f'Epoch {epoch} completed with average loss: {avg_epoch_loss:.6f}')
+        
+        # Save model at specified epoch intervals
+        if (epoch + 1) % args.train.interval_save == 0:
+            saver.save_models(
+                {'vocoder': model}, postfix=f'epoch_{epoch+1}')
+            saver.log_info(f'Model saved at epoch {epoch+1}')
+        
+        # Validate at specified epoch intervals
+        if (epoch + 1) % args.train.interval_val == 0:
+            # run testing set
+            path_testdir_runtime = os.path.join(
+                    args.env.expdir,
+                    'runtime_gen', 
+                    f'gen_epoch_{epoch+1}')
+            test_loss, test_loss_mss, test_loss_f0 = test(
+                args, model, loss_func, loader_test,
+                path_gendir=path_testdir_runtime)
+            saver.log_info(
+                ' --- <validation> --- \nloss: {:.6f}. mss loss: {:.6f}, f0: {:.6f}'.format(
+                    test_loss, test_loss_mss, test_loss_f0
                 )
+            )
 
-                saver.log_value({
-                    'valid loss': test_loss,
-                    'valid loss mss': test_loss_mss,
-                    'valid loss f0': test_loss_f0,
-                })
-                model.train()
+            saver.log_value({
+                'valid loss': test_loss,
+                'valid loss mss': test_loss_mss,
+                'valid loss f0': test_loss_f0,
+                'epoch': epoch + 1
+            })
+            model.train()
 
-                # save best model
-                if test_loss < best_loss:
-                    saver.log_info(f' [V] best model updated. Previous: {best_loss}, New: {test_loss}')
-                    saver.save_models(
-                        {'vocoder': model}, postfix='best')
-                    best_loss = test_loss
+            # save best model
+            if test_loss < best_loss:
+                saver.log_info(f' [V] best model updated. Previous: {best_loss}, New: {test_loss}')
+                saver.save_models(
+                    {'vocoder': model}, postfix='best')
+                best_loss = test_loss
 
-                saver.make_report()
+            saver.make_report()
