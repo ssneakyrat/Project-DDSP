@@ -7,6 +7,8 @@ import os
 import argparse
 import torch
 import shutil
+import time
+import glob
 from logger import utils, report
 from solver import train, test, render
 
@@ -65,6 +67,11 @@ def parse_args(args=None, namespace=None):
         type=str,
         required=False,
         help="[inference, validation] individual harmonic and noise output",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start a fresh training run (discard previous checkpoints)",
     )
     return parser.parse_args(args=args, namespace=namespace)
 
@@ -141,6 +148,62 @@ def get_data_loaders(args, whole_audio=False):
     
     return train_loader, valid_loader
 
+def find_latest_checkpoint(expdir):
+    """Find the latest checkpoint in the experiment directory."""
+    ckpt_dir = os.path.join(expdir, 'ckpts')
+    if not os.path.exists(ckpt_dir):
+        return None
+    
+    # Look for checkpoint files with a step number in the name
+    ckpt_files = glob.glob(os.path.join(ckpt_dir, 'vocoder_*.pt'))
+    if not ckpt_files:
+        return None
+    
+    # Extract step numbers and find the latest
+    latest_ckpt = None
+    latest_step = -1
+    
+    for ckpt_file in ckpt_files:
+        # Try to extract step number from filename
+        try:
+            filename = os.path.basename(ckpt_file)
+            # Format typically like: vocoder_12345_2.pt or vocoder_best.pt
+            if 'best' in filename:
+                continue  # Skip best model as it's not a specific step
+            step_str = filename.split('_')[1]
+            step = int(step_str)
+            if step > latest_step:
+                latest_step = step
+                latest_ckpt = ckpt_file
+        except (IndexError, ValueError):
+            continue
+    
+    return latest_ckpt
+
+def handle_experiment_directory(args, fresh_start=False):
+    """Handle experiment directory creation or loading."""
+    expdir = args.env.expdir
+    
+    if os.path.exists(expdir):
+        if fresh_start:
+            print(f"Starting fresh: Removing existing experiment directory: {expdir}")
+            shutil.rmtree(expdir)
+            os.makedirs(expdir, exist_ok=True)
+            return None
+        else:
+            print(f"Experiment directory exists: {expdir}")
+            # Find latest checkpoint
+            latest_ckpt = find_latest_checkpoint(expdir)
+            if latest_ckpt:
+                print(f"Found latest checkpoint: {latest_ckpt}")
+            else:
+                print("No checkpoints found, starting from scratch.")
+            return latest_ckpt
+    else:
+        print(f"Creating new experiment directory: {expdir}")
+        os.makedirs(expdir, exist_ok=True)
+        return None
+
 if __name__ == '__main__':
     # parse commands
     cmd = parse_args()
@@ -149,7 +212,15 @@ if __name__ == '__main__':
     args = utils.load_config(cmd.config)
     print(' > config:', cmd.config)
     print(' >    exp:', args.env.expdir)
-
+    
+    # Handle experiment directory and find checkpoint to resume from
+    latest_ckpt = None
+    if cmd.stage == 'training':
+        latest_ckpt = handle_experiment_directory(args, fresh_start=cmd.fresh)
+        # If user specified a checkpoint, use that instead of the latest found
+        if cmd.model_ckpt:
+            latest_ckpt = cmd.model_ckpt
+    
     # load model
     model = None
     if cmd.model == 'SawSinSub':
@@ -191,10 +262,24 @@ if __name__ == '__main__':
     else:
         raise ValueError(f" [x] Unknown Model: {cmd.model}")
     
-    # load parameters
-    if cmd.model_ckpt:
-        model = utils.load_model_params(
-            cmd.model_ckpt, model, args.device)
+    # load parameters from checkpoint if available
+    initial_global_step = -1
+    if latest_ckpt:
+        print(f"Loading model from checkpoint: {latest_ckpt}")
+        model = utils.load_model_params(latest_ckpt, model, args.device)
+        # Try to extract step number from checkpoint filename for continuing training
+        try:
+            ckpt_basename = os.path.basename(latest_ckpt)
+            if '_' in ckpt_basename:
+                step_str = ckpt_basename.split('_')[1]
+                initial_global_step = int(step_str)
+                print(f"Continuing training from step {initial_global_step}")
+        except (IndexError, ValueError):
+            initial_global_step = -1
+    # For inference or validation modes, always use the specified checkpoint
+    elif cmd.model_ckpt:
+        print(f"Loading model from specified checkpoint: {cmd.model_ckpt}")
+        model = utils.load_model_params(cmd.model_ckpt, model, args.device)
 
     # loss
     loss_func = HybridLoss(args.loss.n_ffts)
@@ -208,14 +293,10 @@ if __name__ == '__main__':
 
     # datas
     loader_train, loader_valid = get_data_loaders(args, whole_audio=False)
-
-    if os.path.exists(args.env.expdir):
-        print(f"Removing existing experiment directory: {args.env.expdir}")
-        shutil.rmtree(args.env.expdir)
         
     # stage
     if cmd.stage == 'training':
-        train(args, model, loss_func, loader_train, loader_valid)
+        train(args, model, loss_func, loader_train, loader_valid, initial_global_step=initial_global_step)
     elif cmd.stage == 'validation':
         output_dir = 'valid_gen'
         if cmd.output_dir:
@@ -239,4 +320,3 @@ if __name__ == '__main__':
             is_part=cmd.is_part)
     else:
           raise ValueError(f" [x] Unkown Stage: {cmd.stage }")
-    

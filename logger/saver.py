@@ -15,8 +15,20 @@ import matplotlib.pyplot as plt
 
 import torch
 
-from . import utils
-from . import report
+# Fix: Change relative imports to absolute imports
+# This ensures the file can be run directly or imported as a module
+import sys
+import os
+
+# Add the parent directory to the path if running this file directly
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    import logger.utils as utils
+    import logger.report as report
+else:
+    # When imported as part of the package
+    from logger import utils
+    from logger import report
 
 
 class Saver(object):
@@ -28,7 +40,7 @@ class Saver(object):
         self.expdir = args.env.expdir
         exists_ok = True
 
-        # cold start
+        # Set global step based on provided value or default
         self.global_step = initial_global_step
         self.init_time = time.time()
         self.last_time = time.time()
@@ -46,12 +58,16 @@ class Saver(object):
 
         # figs
         self.path_figdir = os.path.join(self.expdir, 'figs')
+        os.makedirs(self.path_figdir, exist_ok=exists_ok)
 
-        # save config
+        # save config if it doesn't exist
         path_config = os.path.join(self.expdir, 'config.yaml')
-        with open(path_config, "w") as out_config:
-            yaml.dump(dict(args), out_config)
-
+        if not os.path.exists(path_config):
+            with open(path_config, "w") as out_config:
+                yaml.dump(dict(args), out_config)
+        else:
+            # Log that we're using existing config
+            self.log_info(f"Using existing config from {path_config}")
 
     def log_info(self, msg):
         '''log method'''
@@ -139,7 +155,7 @@ class Saver(object):
         print(' [*] model params saved: {}'.format(path_params))
 
         # save - only save the state_dict, not the entire model
-        # Removed: torch.save(model, path_pt)
+        #torch.save(model, path_pt)
         torch.save(model.state_dict(), path_params)
 
         # to json
@@ -157,3 +173,7 @@ class Saver(object):
         self.global_step += 1
 
 
+# Add a simple test if this file is run directly
+if __name__ == "__main__":
+    print("This module is meant to be imported, not run directly.")
+    print("For testing purposes, you can run main.py instead.")

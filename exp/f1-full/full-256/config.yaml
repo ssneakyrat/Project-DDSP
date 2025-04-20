@@ -23,8 +23,8 @@ model:
   n_mag_noise: 80
 train:
   batch_size: 16
-  epochs: 100000
-  interval_log: 10
-  interval_save: 500
-  interval_val: 500
+  epochs: 11
+  interval_log: 5
+  interval_save: 5
+  interval_val: 5
   lr: 0.002

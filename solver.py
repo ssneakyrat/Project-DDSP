@@ -161,9 +161,9 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
     return test_loss, test_loss_mss, test_loss_f0
 
 
-def train(args, model, loss_func, loader_train, loader_test):
+def train(args, model, loss_func, loader_train, loader_test, initial_global_step=-1):
     # saver
-    saver = Saver(args)
+    saver = Saver(args, initial_global_step=initial_global_step)
 
     # model size
     params_count = utils.get_network_paras_amount({'model': model})
@@ -178,7 +178,25 @@ def train(args, model, loss_func, loader_train, loader_test):
     num_batches = len(loader_train)
     model.train()
     prev_save_time = -1
+    
+    # Check for existing validation results to determine best_loss
+    if os.path.exists(saver.path_log_value) and initial_global_step > 0:
+        try:
+            with open(saver.path_log_value, 'r') as f:
+                for line in f:
+                    if 'valid loss' in line:
+                        parts = line.strip().split(' | ')
+                        if len(parts) >= 2:
+                            loss_val = float(parts[1])
+                            if loss_val < best_loss:
+                                best_loss = loss_val
+            saver.log_info(f'Found previous best validation loss: {best_loss}')
+        except Exception as e:
+            saver.log_info(f'Error reading previous logs: {e}')
+    
     saver.log_info('======= start training =======')
+    saver.log_info(f'Starting from global step: {saver.global_step}')
+    
     for epoch in range(args.train.epochs):
         for batch_idx, data in enumerate(loader_train):
             saver.global_step_increment()
@@ -240,7 +258,6 @@ def train(args, model, loss_func, loader_train, loader_test):
                 })
             
             # validation
-            # if saver.global_step % args.train.interval_val == 0:
             cur_hour = saver.get_total_time(to_str=False) // 3600
             if cur_hour != prev_save_time:
                 # save latest
@@ -271,11 +288,9 @@ def train(args, model, loss_func, loader_train, loader_test):
 
                 # save best model
                 if test_loss < best_loss:
-                    saver.log_info(' [V] best model updated.')
+                    saver.log_info(f' [V] best model updated. Previous: {best_loss}, New: {test_loss}')
                     saver.save_models(
                         {'vocoder': model}, postfix='best')
-                    test_loss = best_loss
+                    best_loss = test_loss
 
                 saver.make_report()
-
-                          
