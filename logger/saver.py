@@ -134,13 +134,12 @@ class Saver(object):
             self.path_ckptdir , name+postfix+'.pt')
         path_params = os.path.join(
             self.path_ckptdir, name+postfix+'_params.pt')
-       
+    
         # check
-        print(' [*] model saved: {}'.format(path_pt))
         print(' [*] model params saved: {}'.format(path_params))
 
-        # save
-        torch.save(model, path_pt)
+        # save - only save the state_dict, not the entire model
+        # Removed: torch.save(model, path_pt)
         torch.save(model.state_dict(), path_params)
 
         # to json

@@ -83,6 +83,10 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
     with torch.no_grad():
         for bidx, data in enumerate(loader_test):
             fn = data['name'][0]
+            # Fix: Handle the case where fn is still a list
+            if isinstance(fn, list):
+                fn = fn[0]
+                
             print('--------')
             print('{}/{} - {}'.format(bidx, num_batches, fn))
 

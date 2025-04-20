@@ -79,8 +79,12 @@ class DatasetWrapper(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.dataset[idx]
         # The solver.py expects 'name' instead of 'filename'
-        # Also wrapping in a list since solver.py accesses it as data['name'][0]
-        item['name'] = [item.pop('filename')]
+        filename = item.pop('filename')
+        # Handle the case where filename might already be a list
+        if isinstance(filename, list):
+            item['name'] = filename
+        else:
+            item['name'] = [filename]
         return item
 
 def get_data_loaders(args, whole_audio=False):
