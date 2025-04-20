@@ -1,16 +1,8 @@
 import os
-import yaml
-import json
-import pickle
-import argparse
+import datetime
+import collections
 import numpy as np
-import soundfile as sf
-# from easydict import EasyDict as edict
-
-import scipy
-import scipy.signal
-
-import torch
+import matplotlib.pyplot as plt
 
 # Add this block to support running the file directly
 if __name__ == "__main__":
@@ -18,109 +10,128 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-def traverse_dir(
-        root_dir,
-        extension,
-        amount=None,
-        str_include=None,
-        str_exclude=None,
-        is_pure=False,
-        is_sort=False,
-        is_ext=True):
+def load_log(path_log):
+    vals_map = collections.defaultdict(list)
+    with open(path_log, 'r') as f:
+        for line in f:
+            try:
+                line = line.strip()
+                key, val, step, acc_time = line.split(' | ')
+                vals_map[key].append((float(val), int(step), acc_time))
+            except:
+                continue
+    return vals_map
 
-    file_list = []
-    cnt = 0
-    for root, _, files in os.walk(root_dir):
-        for file in files:
-            if file.endswith(extension):
-                # path
-                mix_path = os.path.join(root, file)
-                pure_path = mix_path[len(root_dir)+1:] if is_pure else mix_path
 
-                # amount
-                if (amount is not None) and (cnt == amount):
-                    if is_sort:
-                        file_list.sort()
-                    return file_list
-                
-                # check string
-                if (str_include is not None) and (str_include not in pure_path):
-                    continue
-                if (str_exclude is not None) and (str_exclude in pure_path):
-                    continue
-                
-                if not is_ext:
-                    ext = pure_path.split('.')[-1]
-                    pure_path = pure_path[:-(len(ext)+1)]
-                file_list.append(pure_path)
-                cnt += 1
-    if is_sort:
-        file_list.sort()
-    return file_list
+def unpack_values(value_list):
+    xs, ys, ts = [], [], []
+    for val in value_list:
+        xs.append(val[1]) 
+        ys.append(val[0]) 
+        ts.append(val[2])
+    return xs, ys, ts
 
+
+def compare_exp(
+        log_list,
+        x_range=None,
+        y_range=None,
+        path_fig='compare.png',
+        value='valid loss',
+        title='valid loss comparison',
+        dpi=120,
+        y_log=True):
+    
+    '''
+    several exps, one value
+    '''
+    print(f'[*] generating report for {value}')
+    fig = plt.figure(dpi=dpi)
+    plt.title(title)
+
+    exported_data = dict()
+    for path_log, name in log_list:
+        vals_map = load_log(os.path.join(path_log, 'log_value.txt'))
+        xs, ys, ts = unpack_values(vals_map[value])
+
+        xs = np.arange(len(xs))
+        plt.plot(xs, ys, label=name)
+
+        min_y = np.min(ys)
+        min_x = xs[np.argmin(ys)]
+        min_t = ts[np.argmin(ys)]
+        plt.plot(min_x, min_y, 'ro')
+    
+        exported_data[path_log+'_x'] = xs
+        exported_data[path_log+'_y'] = ys
+        
+    if y_log:
+        plt.yscale('log')
+    plt.legend(loc='upper right')
+    if x_range:
+        plt.xlim(x_range)
+    if y_range:
+        plt.ylim(y_range)
+    plt.tight_layout()
+    plt.savefig(path_fig)
+    plt.close() 
+
+    np.savez(path_fig.replace('png', 'npz'), **exported_data)
+
+def make_exp_report(
+        path_log,
+        path_figdir='figs',
+        dpi=80):
+    '''
+    one exp, all values
+    '''
+
+    os.makedirs(path_figdir, exist_ok=True)
+
+    # load log
+    vals_map = load_log(path_log)
+
+    # check all keys
+    # print(' [i] (report) found keys:', ', '.join(list(vals_map.keys())))
+
+    # plot train/valid loss
+    path_figure_tr_val = os.path.join(path_figdir, 'training.png')
+    xs_tr, ys_tr, ts_tr = unpack_values(vals_map['train loss'])
+    is_valid = 'valid loss' in vals_map.keys()
 
     
-class DotDict(dict):
-    def __getattr__(*args):         
-        val = dict.get(*args)         
-        return DotDict(val) if type(val) is dict else val   
+    if is_valid:
+        xs_va, ys_va, ts_va = unpack_values(vals_map['valid loss'])
+        min_y = np.min(ys_va)
+        min_x = xs_va[np.argmin(ys_va)]
+        min_t = ts_va[np.argmin(ys_va)]
 
-    __setattr__ = dict.__setitem__    
-    __delattr__ = dict.__delitem__
+    plt.figure(dpi=dpi)
+    plt.title('training process')
+    plt.plot(xs_tr, ys_tr, label='train', alpha=0.5)
+    if is_valid:
+        plt.plot(xs_va, ys_va, label='valid')
+        plt.plot(min_x, min_y, 'ro')
+    plt.yscale('log')
+    plt.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig(path_figure_tr_val)
+    plt.close() 
 
+    # other values
+    for key in vals_map.keys():
+        if key in ['valid loss', 'train loss']:
+            continue
+        path_fig = os.path.join(path_figdir, key + '.png')
+        xs, ys, ts = unpack_values(vals_map[key])
 
-def get_network_paras_amount(model_dict):
-    info = dict()
-    for model_name, model in model_dict.items():
-        # all_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        info[model_name] = trainable_params
-    return info
-
-
-def load_config(path_config):
-    with open(path_config, "r") as config:
-        args = yaml.safe_load(config)
-    args = DotDict(args)
-    # print(args)
-    return args
-
-
-def to_json(path_params, path_json):
-    params = torch.load(path_params, map_location=torch.device('cpu'))
-    raw_state_dict = {}
-    for k, v in params.items():
-        val = v.flatten().numpy().tolist()
-        raw_state_dict[k] = val
-
-    with open(path_json, 'w') as outfile:
-        json.dump(raw_state_dict, outfile,indent= "\t")
-
-
-def convert_tensor_to_numpy(tensor, is_squeeze=True):
-    if is_squeeze:
-        tensor = tensor.squeeze()
-    if tensor.requires_grad:
-        tensor = tensor.detach()
-    if tensor.is_cuda:
-        tensor = tensor.cpu()
-    return tensor.numpy()
-
-           
-def load_model_params(
-        path_pt, 
-        model,
-        device='cpu'):
-
-    # check
-    print(' [*] restoring model from', path_pt)
-
-    model.load_state_dict(
-        torch.load(
-            path_pt, 
-            map_location=torch.device(device)))
-    return model
+        plt.figure(dpi=dpi)
+        plt.title(key)
+        plt.plot(xs, ys)
+        plt.yscale('log')
+        plt.tight_layout()
+        plt.savefig(path_fig)
+        plt.close()
 
 
 # Add a simple test if this file is run directly
