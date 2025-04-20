@@ -6,7 +6,7 @@ email:  s101062219@gmail.com
 import os
 import argparse
 import torch
-
+import shutil
 from logger import utils, report
 from solver import train, test, render
 
@@ -205,6 +205,10 @@ if __name__ == '__main__':
     # datas
     loader_train, loader_valid = get_data_loaders(args, whole_audio=False)
 
+    if os.path.exists(args.env.expdir):
+        print(f"Removing existing experiment directory: {args.env.expdir}")
+        shutil.rmtree(args.env.expdir)
+        
     # stage
     if cmd.stage == 'training':
         train(args, model, loss_func, loader_train, loader_valid)

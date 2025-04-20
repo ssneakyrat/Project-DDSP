@@ -48,7 +48,7 @@ def softmax_kernel(data, *, projection_matrix, is_query, normalize_data=True, ep
 
 def orthogonal_matrix_chunk(cols, qr_uniform_q = False, device = None):
     unstructured_block = torch.randn((cols, cols), device = device)
-    q, r = torch.qr(unstructured_block.cpu(), some = True)
+    q, r = torch.linalg.qr(unstructured_block.cpu(), mode='reduced')
     q, r = map(lambda t: t.to(device), (q, r))
 
     # proposed by @Parskatt

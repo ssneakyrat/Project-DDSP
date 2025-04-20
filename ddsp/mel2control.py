@@ -3,7 +3,7 @@
 
 import torch
 import torch.nn as nn
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 
 from ddsp.pcmer import PCmer
 
@@ -60,7 +60,7 @@ class Mel2Control(nn.Module):
         return: 
             dict of B x n_frames x feat
         '''
-        
+
         x = self.stack(x.transpose(1,2)).transpose(1,2)
         x = self.decoder(x)
         x = self.norm(x)
