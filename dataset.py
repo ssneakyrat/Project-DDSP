@@ -65,7 +65,7 @@ class SingingVoiceDataset(Dataset):
     def build_dataset(self):
         print("Building dataset...")
         lab_files = glob.glob(os.path.join(self.dataset_dir, "lab", "*.lab"))
-        
+        print(f"Found {len(lab_files)} lab files")
         # Limit the number of files if max_files is specified
         if self.max_files and self.max_files < len(lab_files):
             print(f"Limiting dataset to {self.max_files} files")

@@ -91,7 +91,8 @@ def get_data_loaders(args, whole_audio=False):
         rebuild_cache=False,
         n_mels=80,
         hop_length=args.data.block_size,
-        win_length=1024
+        win_length=1024,
+        max_files=1000
     )
     
     # Create validation dataset
@@ -103,7 +104,8 @@ def get_data_loaders(args, whole_audio=False):
         rebuild_cache=False,
         n_mels=80,
         hop_length=args.data.block_size,
-        win_length=1024
+        win_length=1024,
+        max_files=10
     )
     
     # Create a wrapper for the dataset to rename 'filename' to 'name'

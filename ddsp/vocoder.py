@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from mel2control import Mel2Control
-from modules import SawtoothGenerator, HarmonicOscillator, WavetableSynthesizer, WaveGeneratorOscillator
-from core import scale_function, unit_to_hz2, frequency_filter, upsample
+from ddsp.mel2control import Mel2Control
+from ddsp.modules import SawtoothGenerator, HarmonicOscillator, WavetableSynthesizer, WaveGeneratorOscillator
+from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
 
 
 class Full(nn.Module):

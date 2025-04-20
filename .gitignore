@@ -1,3 +1,6 @@
 *.zip
 *.pyc
 datasets/
+usage.txt
+cache/
+exp/f1-full/full-256/log_info.txt

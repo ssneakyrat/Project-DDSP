@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import weight_norm
 
-from pcmer import PCmer
+from ddsp.pcmer import PCmer
 
 
 def split_to_dict(tensor, tensor_splits):

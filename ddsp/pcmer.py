@@ -1,13 +1,15 @@
 import torch
-
 from torch import nn
 import math
 from functools import partial
 from einops import rearrange, repeat
 
-from local_attention import LocalAttention
+# Remove fast_transformers import
+# import fast_transformers.causal_product.causal_product_cuda
+
+# Pure PyTorch implementation - no external dependencies
 import torch.nn.functional as F
-import fast_transformers.causal_product.causal_product_cuda
+from local_attention import LocalAttention  # Keep this as it seems to be a local module
 
 def softmax_kernel(data, *, projection_matrix, is_query, normalize_data=True, eps=1e-4, device = None):
     b, h, *_ = data.shape
@@ -55,6 +57,7 @@ def orthogonal_matrix_chunk(cols, qr_uniform_q = False, device = None):
         d = torch.diag(r, 0)
         q *= d.sign()
     return q.t()
+
 def exists(val):
     return val is not None
 
@@ -127,6 +130,7 @@ class _EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(parent.residual_dropout)
         
         # selfatt -> fastatt: performer!
+        # Keep using the original SelfAttention but with our pure PyTorch implementation
         self.attn = SelfAttention(dim = parent.dim_model,
                                   heads = parent.num_heads,
                                   causal = False)
@@ -209,6 +213,8 @@ class ConformerConvModule(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+# ----- Pure PyTorch Implementations -----
+
 def linear_attention(q, k, v):
     if v is None:
         #print (k.size(), q.size())
@@ -224,6 +230,39 @@ def linear_attention(q, k, v):
         #print ("TRUEEE: ", context.size(), q.size(), D_inv.size())
         out = torch.einsum('...de,...nd,...n->...ne', context, q, D_inv)
         return out
+
+# Pure PyTorch implementation of causal linear attention
+def causal_linear_attention_noncuda(q, k, v):
+    """
+    Causal linear attention implementation using pure PyTorch.
+    This is a manual implementation that doesn't require CUDA kernel.
+    """
+    B, H, L, E = q.shape
+    _, _, _, D = v.shape
+    
+    # Initialize output tensor
+    output = torch.zeros_like(v)
+    
+    # Compute attention incrementally for each position
+    cumulative_k = torch.zeros((B, H, E), device=q.device)
+    cumulative_kv = torch.zeros((B, H, E, D), device=q.device)
+    
+    for i in range(L):
+        q_i = q[:, :, i]  # B x H x E
+        k_i = k[:, :, i]  # B x H x E
+        v_i = v[:, :, i]  # B x H x D
+        
+        # Update cumulative_* tensors with current position
+        cumulative_k = cumulative_k + k_i
+        cumulative_kv = cumulative_kv + torch.einsum('bhe,bhd->bhed', k_i, v_i)
+        
+        # Calculate output for current position
+        output[:, :, i] = torch.einsum('bhe,bhed,bh->bhd', 
+                                       q_i, 
+                                       cumulative_kv, 
+                                       1.0 / (torch.einsum('bhe,bhe->bh', q_i, cumulative_k) + 1e-10))
+    
+    return output
 
 def gaussian_orthogonal_random_matrix(nb_rows, nb_columns, scaling = 0, qr_uniform_q = False, device = None):
     nb_full_blocks = int(nb_rows / nb_columns)
@@ -275,13 +314,10 @@ class FastAttention(nn.Module):
         self.no_projection = no_projection
 
         self.causal = causal
+        # Use our pure PyTorch implementation instead of CUDA kernels
         if causal:
-            try:
-                import fast_transformers.causal_product.causal_product_cuda
-                self.causal_linear_fn = partial(causal_linear_attention)
-            except ImportError:
-                print('unable to import cuda code for auto-regressive Performer. will default to the memory inefficient non-cuda version')
-                self.causal_linear_fn = causal_linear_attention_noncuda
+            self.causal_linear_fn = causal_linear_attention_noncuda
+        
     @torch.no_grad()
     def redraw_projection_matrix(self):
         projections = self.create_projection()
@@ -312,6 +348,7 @@ class FastAttention(nn.Module):
         else:
             out = attn_fn(q, k, v)
             return out
+            
 class SelfAttention(nn.Module):
     def __init__(self, dim, causal = False, heads = 8, dim_head = 64, local_heads = 0, local_window_size = 256, nb_features = None, feature_redraw_interval = 1000, generalized_attention = False, kernel_fn = nn.ReLU(), qr_uniform_q = False, dropout = 0., no_projection = False):
         super().__init__()

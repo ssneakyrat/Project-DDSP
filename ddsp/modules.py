@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import numpy as np
 
-from core import fft_convolve, linear_lookup, upsample, remove_above_nyquist
+from ddsp.core import fft_convolve, linear_lookup, upsample, remove_above_nyquist
 
 
 def safe_division(a, b, eps=1e-9):
