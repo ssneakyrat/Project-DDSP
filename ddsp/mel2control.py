@@ -60,7 +60,7 @@ class Mel2Control(nn.Module):
         return: 
             dict of B x n_frames x feat
         '''
-
+        
         x = self.stack(x.transpose(1,2)).transpose(1,2)
         x = self.decoder(x)
         x = self.norm(x)

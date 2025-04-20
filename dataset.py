@@ -60,6 +60,8 @@ class SingingVoiceDataset(Dataset):
         mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
         # Normalize to [0, 1] range
         mel_spec = (mel_spec - mel_spec.min()) / (mel_spec.max() - mel_spec.min())
+        # Transpose to get shape (n_frames, n_mels) which will become (batch, n_frames, n_mels) after batching
+        mel_spec = mel_spec.T
         return mel_spec
     
     def build_dataset(self):

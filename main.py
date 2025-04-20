@@ -68,16 +68,24 @@ def parse_args(args=None, namespace=None):
     )
     return parser.parse_args(args=args, namespace=namespace)
 
+# Define the DatasetWrapper at module level (outside any function)
+class DatasetWrapper(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        # The solver.py expects 'name' instead of 'filename'
+        # Also wrapping in a list since solver.py accesses it as data['name'][0]
+        item['name'] = [item.pop('filename')]
+        return item
+
 def get_data_loaders(args, whole_audio=False):
     """
     Get data loaders for training and validation.
-    
-    Args:
-        args: Configuration arguments
-        whole_audio: Whether to load whole audio files
-    
-    Returns:
-        tuple: (train_loader, valid_loader)
     """
     import torch
     from dataset import SingingVoiceDataset
@@ -108,28 +116,14 @@ def get_data_loaders(args, whole_audio=False):
         max_files=10
     )
     
-    # Create a wrapper for the dataset to rename 'filename' to 'name'
-    class DatasetWrapper(torch.utils.data.Dataset):
-        def __init__(self, dataset):
-            self.dataset = dataset
-        
-        def __len__(self):
-            return len(self.dataset)
-        
-        def __getitem__(self, idx):
-            item = self.dataset[idx]
-            # The solver.py expects 'name' instead of 'filename'
-            # Also wrapping in a list since solver.py accesses it as data['name'][0]
-            item['name'] = [item.pop('filename')]
-            return item
-    
     # Create data loaders
     train_loader = torch.utils.data.DataLoader(
         DatasetWrapper(train_dataset),
         batch_size=args.train.batch_size,
         shuffle=True,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
     
     valid_loader = torch.utils.data.DataLoader(
@@ -137,7 +131,8 @@ def get_data_loaders(args, whole_audio=False):
         batch_size=args.inference.batch_size,
         shuffle=False,
         num_workers=2,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
     
     return train_loader, valid_loader
