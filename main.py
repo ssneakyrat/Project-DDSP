@@ -68,6 +68,77 @@ def parse_args(args=None, namespace=None):
     )
     return parser.parse_args(args=args, namespace=namespace)
 
+def get_data_loaders(args, whole_audio=False):
+    """
+    Get data loaders for training and validation.
+    
+    Args:
+        args: Configuration arguments
+        whole_audio: Whether to load whole audio files
+    
+    Returns:
+        tuple: (train_loader, valid_loader)
+    """
+    import torch
+    from dataset import SingingVoiceDataset
+    
+    # Create training dataset
+    train_dataset = SingingVoiceDataset(
+        dataset_dir=args.data.train_path,
+        cache_dir="./cache/train",
+        sample_rate=args.data.sampling_rate,
+        context_window_samples=int(args.data.duration * args.data.sampling_rate),
+        rebuild_cache=False,
+        n_mels=80,
+        hop_length=args.data.block_size,
+        win_length=1024
+    )
+    
+    # Create validation dataset
+    valid_dataset = SingingVoiceDataset(
+        dataset_dir=args.data.valid_path,
+        cache_dir="./cache/valid",
+        sample_rate=args.data.sampling_rate,
+        context_window_samples=int(args.data.duration * args.data.sampling_rate),
+        rebuild_cache=False,
+        n_mels=80,
+        hop_length=args.data.block_size,
+        win_length=1024
+    )
+    
+    # Create a wrapper for the dataset to rename 'filename' to 'name'
+    class DatasetWrapper(torch.utils.data.Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
+        
+        def __len__(self):
+            return len(self.dataset)
+        
+        def __getitem__(self, idx):
+            item = self.dataset[idx]
+            # The solver.py expects 'name' instead of 'filename'
+            # Also wrapping in a list since solver.py accesses it as data['name'][0]
+            item['name'] = [item.pop('filename')]
+            return item
+    
+    # Create data loaders
+    train_loader = torch.utils.data.DataLoader(
+        DatasetWrapper(train_dataset),
+        batch_size=args.train.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    valid_loader = torch.utils.data.DataLoader(
+        DatasetWrapper(valid_dataset),
+        batch_size=args.inference.batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
+    
+    return train_loader, valid_loader
 
 if __name__ == '__main__':
     # parse commands
