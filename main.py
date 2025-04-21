@@ -75,6 +75,50 @@ def parse_args(args=None, namespace=None):
     )
     return parser.parse_args(args=args, namespace=namespace)
 
+def custom_collate(batch):
+    """
+    Custom collate function to handle variable-length tensors in a batch.
+    """
+    # Get batch size
+    batch_size = len(batch)
+    
+    # Extract dimensions from first item to understand tensor shapes
+    example_item = batch[0]
+    f0_shape = example_item['f0'].shape
+    mel_shape = example_item['mel'].shape
+    
+    # Find max lengths in the batch
+    max_audio_len = max(item['audio'].size(0) for item in batch)
+    max_f0_len = max(item['f0'].size(0) for item in batch)
+    
+    # Initialize batch tensors with correct dimensions
+    batch_dict = {
+        'name': [item['name'] for item in batch],
+        'audio': torch.zeros(batch_size, max_audio_len),
+        'mel': torch.stack([item['mel'] for item in batch]),
+    }
+    
+    # Handle f0 based on its actual dimensions
+    if len(f0_shape) == 1:  # f0 is 1D
+        batch_dict['f0'] = torch.zeros(batch_size, max_f0_len)
+    else:  # f0 is multi-dimensional
+        batch_dict['f0'] = torch.zeros(batch_size, max_f0_len, *f0_shape[1:])
+    
+    # Fill tensors with actual data (with padding)
+    for i, item in enumerate(batch):
+        audio_len = item['audio'].size(0)
+        f0_len = item['f0'].size(0)
+        
+        batch_dict['audio'][i, :audio_len] = item['audio']
+        
+        # Handle f0 assignment based on its dimensions
+        if len(f0_shape) == 1:  # f0 is 1D
+            batch_dict['f0'][i, :f0_len] = item['f0']
+        else:  # f0 is multi-dimensional
+            batch_dict['f0'][i, :f0_len, ...] = item['f0']
+    
+    return batch_dict
+
 # Define the DatasetWrapper at module level (outside any function)
 class DatasetWrapper(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -127,14 +171,15 @@ def get_data_loaders(args, whole_audio=False):
         max_files=10
     )
     
-    # Create data loaders
+    # Create data loaders with custom collate function
     train_loader = torch.utils.data.DataLoader(
         DatasetWrapper(train_dataset),
         batch_size=args.train.batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        collate_fn=custom_collate
     )
     
     valid_loader = torch.utils.data.DataLoader(
@@ -143,7 +188,8 @@ def get_data_loaders(args, whole_audio=False):
         shuffle=False,
         num_workers=2,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        collate_fn=custom_collate
     )
     
     return train_loader, valid_loader
