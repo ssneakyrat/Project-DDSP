@@ -59,22 +59,18 @@ def extract_mel_from_audio(audio, args):
 
 def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_part=False):
     """
-    Perform inference directly from a WAV file.
-    
-    Args:
-        args: Configuration arguments
-        model: The vocoder model
-        path_wav_file: Path to input WAV file
-        path_gendir: Directory to save generated audio
-        is_part: Whether to output individual harmonic and noise components
+    Perform inference directly from a WAV file by splitting into 2-second chunks,
+    processing each chunk separately with proper phase continuity.
     """
-    print(' [*] inferring from WAV file...')
+    print(' [*] Inferencing from WAV file using trained chunk parameters...')
     model.eval()
     
+    # Import needed libraries
     try:
         import torchaudio
+        import parselmouth
     except ImportError:
-        print(" [!] torchaudio is required for WAV inference. Please install it.")
+        print(" [!] torchaudio and parselmouth are required. Please install them.")
         return
     
     # Check if the input file exists
@@ -87,60 +83,155 @@ def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_par
     print(f" > Processing file: {fn}")
     
     # Load WAV file
-    audio, sr = sf.read(path_wav_file)
-    
-    # Resample if necessary
-    if sr != args.data.sampling_rate:
-        print(f" > Resampling from {sr} to {args.data.sampling_rate}")
-        import librosa
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=args.data.sampling_rate)
+    audio, sr = sf.read(path_wav_file, dtype='float32')
     
     # Convert to mono if stereo
     if len(audio.shape) > 1 and audio.shape[1] > 1:
         print(" > Converting stereo to mono")
         audio = audio.mean(axis=1)
+
+    # Resample if needed
+    if sr != args.data.sampling_rate:
+        # Use torchaudio for faster resampling
+        audio_tensor = torch.FloatTensor(audio).unsqueeze(0)
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=sr, new_freq=args.data.sampling_rate
+        )
+        audio_tensor = resampler(audio_tensor)
+        audio = audio_tensor.squeeze(0).numpy()
+        sr = args.data.sampling_rate
     
-    # Normalize audio
-    audio = audio / np.max(np.abs(audio))
+    # Create directories
+    chunks_dir = os.path.join(path_gendir, 'chunks')
+    mel_dir = os.path.join(path_gendir, 'mel_chunks')
+    synth_chunks_dir = os.path.join(path_gendir, 'synth_chunks')
     
-    # Extract mel-spectrogram using the dataset's approach
-    mel = extract_mel_from_audio(audio, args)
-    
-    # Convert to tensor
-    mel_tensor = torch.from_numpy(mel).float().to(args.device).unsqueeze(0)
-    print(' > mel shape:', mel_tensor.shape)
-    
-    # Forward pass
-    with torch.no_grad():
-        signal, f0_pred, _, (s_h, s_n) = model(mel_tensor)
-    
-    # Create output directories
-    os.makedirs(path_gendir, exist_ok=True)
+    os.makedirs(chunks_dir, exist_ok=True)
+    os.makedirs(mel_dir, exist_ok=True)
+    os.makedirs(synth_chunks_dir, exist_ok=True)
     os.makedirs(os.path.join(path_gendir, 'pred'), exist_ok=True)
-    
-    path_pred = os.path.join(path_gendir, 'pred', fn + '_synthesized.wav')
     
     if is_part:
         os.makedirs(os.path.join(path_gendir, 'part'), exist_ok=True)
-        path_pred_n = os.path.join(path_gendir, 'part', fn + '-noise.wav')
+    
+    # Set parameters exactly as in dataset.py
+    context_window_samples = int(args.data.duration * args.data.sampling_rate)
+    hop_length = args.data.block_size
+    win_length = 1024  # Same as in dataset.py
+    n_mels = 80  # Same as in dataset.py
+    fmin = 40  # Same as in dataset.py
+    fmax = 12000  # Same as in dataset.py
+    
+    # Create mel transform with exactly the same parameters as in dataset.py
+    device = torch.device(args.device)
+    mel_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=args.data.sampling_rate,
+        n_fft=win_length,
+        win_length=win_length,
+        hop_length=hop_length,
+        f_min=fmin,
+        f_max=fmax,
+        n_mels=n_mels,
+        power=2.0
+    ).to(device)
+    
+    def normalize_mel(mel_spec):
+        """Same normalization as in dataset.py"""
+        mel_spec = mel_spec - mel_spec.min()
+        mel_spec = mel_spec / (mel_spec.max() + 1e-8)
+        return mel_spec
+    
+    # Process in fixed-length chunks without overlap
+    total_samples = len(audio)
+    all_synthesized = []
+    if is_part:
+        all_harmonic = []
+        all_noise = []
+    
+    # Initialize phase for continuity between chunks
+    initial_phase = None
+    
+    for i in range(0, total_samples, context_window_samples):
+        chunk_idx = i // context_window_samples + 1
+        
+        # Extract exact chunk
+        if i + context_window_samples <= total_samples:
+            # Full chunk
+            chunk = audio[i:i+context_window_samples]
+        else:
+            # Last chunk might be smaller, so pad it
+            chunk = np.zeros(context_window_samples)
+            remaining = total_samples - i
+            chunk[:remaining] = audio[i:total_samples]
+        
+        # Save input chunk
+        chunk_path = os.path.join(chunks_dir, f"{fn}_chunk_{chunk_idx}.wav")
+        sf.write(chunk_path, chunk, args.data.sampling_rate)
+        print(f" > Processing chunk {chunk_idx}, samples {i}-{i+len(chunk)}")
+        
+        # Convert to tensor
+        chunk_tensor = torch.FloatTensor(chunk).unsqueeze(0).to(device)
+        
+        # Extract mel spectrogram exactly as in dataset.py
+        mel_spec = mel_transform(chunk_tensor)
+        mel_db = torchaudio.transforms.AmplitudeToDB()(mel_spec)
+        mel_norm = normalize_mel(mel_db)
+        mel_np = mel_norm.squeeze(0).cpu().numpy().T  # Transpose to get (time, n_mels)
+        
+        # Save mel spectrogram
+        mel_path = os.path.join(mel_dir, f"{fn}_chunk_{chunk_idx}.npy")
+        np.save(mel_path, mel_np)
+        
+        # Convert mel back to tensor for inference
+        mel_tensor = torch.from_numpy(mel_np).float().to(device).unsqueeze(0)
+        
+        # Forward pass with phase continuity
+        with torch.no_grad():
+            signal, f0_pred, final_phase, (s_h, s_n) = model(mel_tensor, initial_phase)
+            # Update initial_phase for next chunk
+            initial_phase = final_phase
+        
+        # Convert to numpy
+        synth_chunk = utils.convert_tensor_to_numpy(signal)
+        
+        # Save synthesized chunk
+        synth_chunk_path = os.path.join(synth_chunks_dir, f"{fn}_chunk_{chunk_idx}.wav")
+        sf.write(synth_chunk_path, synth_chunk, args.data.sampling_rate)
+        
+        # For the final output, only use what corresponds to real input
+        if i + context_window_samples > total_samples:
+            valid_len = total_samples - i
+            all_synthesized.append(synth_chunk[:valid_len])
+            if is_part:
+                harmonic_chunk = utils.convert_tensor_to_numpy(s_h)
+                noise_chunk = utils.convert_tensor_to_numpy(s_n)
+                all_harmonic.append(harmonic_chunk[:valid_len])
+                all_noise.append(noise_chunk[:valid_len])
+        else:
+            all_synthesized.append(synth_chunk)
+            if is_part:
+                all_harmonic.append(utils.convert_tensor_to_numpy(s_h))
+                all_noise.append(utils.convert_tensor_to_numpy(s_n))
+    
+    # Concatenate all chunks
+    final_synthesized = np.concatenate(all_synthesized)
+    
+    # Save final output
+    path_pred = os.path.join(path_gendir, 'pred', fn + '_synthesized.wav')
+    print(f" > Saving final concatenated output to: {path_pred}")
+    sf.write(path_pred, final_synthesized, args.data.sampling_rate)
+    
+    if is_part:
         path_pred_h = os.path.join(path_gendir, 'part', fn + '-harmonic.wav')
+        path_pred_n = os.path.join(path_gendir, 'part', fn + '-noise.wav')
+        
+        final_harmonic = np.concatenate(all_harmonic)
+        final_noise = np.concatenate(all_noise)
+        
+        sf.write(path_pred_h, final_harmonic, args.data.sampling_rate)
+        sf.write(path_pred_n, final_noise, args.data.sampling_rate)
     
-    # Convert to numpy
-    pred = utils.convert_tensor_to_numpy(signal)
-    
-    if is_part:
-        pred_n = utils.convert_tensor_to_numpy(s_n)
-        pred_h = utils.convert_tensor_to_numpy(s_h)
-    
-    # Save output
-    print(f" > Saving output to: {path_pred}")
-    sf.write(path_pred, pred, args.data.sampling_rate)
-    
-    if is_part:
-        sf.write(path_pred_n, pred_n, args.data.sampling_rate)
-        sf.write(path_pred_h, pred_h, args.data.sampling_rate)
-    
-    print(" [*] Inference complete.")
+    print(" [*] Phase-continuous chunked inference complete.")
 
 
 def render(args, model, path_mel_dir, path_gendir='gen', is_part=False):
