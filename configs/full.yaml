@@ -3,8 +3,8 @@ data:
   duration: 2
   sampling_rate: 24000
   # f1 full
-  train_path: ./datasets/gin
-  valid_path: ./datasets/gin
+  train_path: ./datasets
+  valid_path: ./datasets
   # valid_path: /volume/wayne-nas-ai-music/vocoder/ddsp-revised/data/f1/test
   # m1 full
   # train_path: /volume/wayne-nas-ai-music/vocoder/dds-revised/data/m1/train-full
@@ -26,7 +26,7 @@ loss:
   n_ffts: [1024, 512, 256, 128]
 device: cuda
 env:
-  expdir: exp/f1-full/full-256
+  expdir: exp/f1-full/miki
   # expdir: exp/m1-full/full-256
   # expdir: exp/f1-3min/full-256
   # expdir: exp/m1-3min/full-256
