@@ -46,7 +46,10 @@ def train_svs(args, model, loss_func, loader_train, loader_test, initial_global_
             # Unpack data and move to device
             for k in data.keys():
                 if k != 'name':
-                    data[k] = data[k].to(args.device).float()
+                    if k in ['phonemes', 'singer_id', 'language_id']:
+                        data[k] = data[k].to(args.device).long()
+                    else:
+                        data[k] = data[k].to(args.device).float()
             
             # Forward pass
             signal, f0_pred, _, _, _ = model(
