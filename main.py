@@ -111,7 +111,7 @@ def get_data_loaders(args, whole_audio=False):
         n_mels=80,
         hop_length=args.data.block_size,
         win_length=1024,
-        max_files=1000
+        max_files=10000
     )
     
     # Create validation dataset

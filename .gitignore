@@ -4,3 +4,4 @@ datasets/
 usage.txt
 cache/
 exp/
+*.log
