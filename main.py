@@ -148,13 +148,13 @@ def svs_collate_fn(batch):
     max_f0_len = max(item['f0'].size(0) for item in batch)
     max_duration_len = max(item['durations'].size(0) for item in batch)
     
-    # Initialize tensors with proper shapes
+    # Initialize tensors with proper shapes and types
     collated['audio'] = torch.zeros(batch_size, max_audio_len)
-    collated['phonemes'] = torch.zeros(batch_size, max_phoneme_len, dtype=torch.long)
+    collated['phonemes'] = torch.zeros(batch_size, max_phoneme_len, dtype=torch.long)  # Ensure long type for phonemes
     collated['f0'] = torch.zeros(batch_size, max_f0_len)
     collated['durations'] = torch.zeros(batch_size, max_duration_len)
     
-    # Process singer_id and language_id
+    # Process singer_id and language_id - ensure these are long tensors
     collated['singer_id'] = torch.zeros(batch_size, dtype=torch.long)
     collated['language_id'] = torch.zeros(batch_size, dtype=torch.long)
     
@@ -177,9 +177,9 @@ def svs_collate_fn(batch):
         collated['f0'][i, :f0_len] = item['f0']
         collated['durations'][i, :duration_len] = item['durations']
         
-        # Handle scalar values
-        collated['singer_id'][i] = item['singer_id']
-        collated['language_id'][i] = item['language_id']
+        # Handle scalar values - ensure correct types
+        collated['singer_id'][i] = item['singer_id'].long() if isinstance(item['singer_id'], torch.Tensor) else torch.tensor(item['singer_id'], dtype=torch.long)
+        collated['language_id'][i] = item['language_id'].long() if isinstance(item['language_id'], torch.Tensor) else torch.tensor(item['language_id'], dtype=torch.long)
         
         # Handle mel spectrograms if present
         if 'mel' in item:
@@ -234,7 +234,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         # Get the filename or use a default one
         filename = item.get('filename', f"sample_{idx}")
         
-        # Get singer_id and ensure it's a tensor
+        # Get singer_id and ensure it's a tensor of the correct type (long)
         if 'singer_id' in item:
             singer_id = item['singer_id']
             if isinstance(singer_id, (list, np.ndarray)):
@@ -243,7 +243,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         else:
             singer_id = torch.tensor(0, dtype=torch.long)
         
-        # Get language_id and ensure it's a tensor
+        # Get language_id and ensure it's a tensor of the correct type (long)
         if 'language_id' in item:
             language_id = item['language_id']
             if isinstance(language_id, (list, np.ndarray)):
@@ -252,12 +252,14 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         else:
             language_id = torch.tensor(0, dtype=torch.long)
         
-        # Extract phoneme sequence
+        # Extract phoneme sequence and ensure it's a long tensor
         if 'phone_seq' in item:
             phone_seq = item['phone_seq']
-            # Ensure phone_seq is a tensor
+            # Ensure phone_seq is a tensor of the correct type
             if not isinstance(phone_seq, torch.Tensor):
                 phone_seq = torch.tensor(phone_seq, dtype=torch.long)
+            elif phone_seq.dtype != torch.long:
+                phone_seq = phone_seq.long()
         else:
             # Create dummy phoneme data if not available
             phone_seq = torch.zeros(100, dtype=torch.long)
@@ -270,7 +272,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
             # Default durations if we can't determine from phone_seq
             durations = torch.ones(100, dtype=torch.float)
         
-        # Get F0 data
+        # Get F0 data and ensure it's a float tensor
         if 'f0' in item:
             f0 = item['f0']
             if not isinstance(f0, torch.Tensor):
@@ -279,16 +281,26 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
             # Create dummy F0 data if not available
             f0 = torch.ones(100, dtype=torch.float) * 220.0
         
+        # Ensure audio is a float tensor
+        audio = item['audio']
+        if not isinstance(audio, torch.Tensor):
+            audio = torch.tensor(audio, dtype=torch.float)
+            
+        # Ensure mel is a float tensor
+        mel = item['mel']
+        if not isinstance(mel, torch.Tensor):
+            mel = torch.tensor(mel, dtype=torch.float)
+        
         # Construct the output with all required fields for SVS
         return {
             'name': filename,
-            'audio': item['audio'] if isinstance(item['audio'], torch.Tensor) else torch.tensor(item['audio'], dtype=torch.float),
+            'audio': audio,
             'phonemes': phone_seq,
             'durations': durations,
             'f0': f0,
             'singer_id': singer_id,
             'language_id': language_id,
-            'mel': item['mel'] if isinstance(item['mel'], torch.Tensor) else torch.tensor(item['mel'], dtype=torch.float)
+            'mel': mel
         }
 
 def get_data_loaders(args, is_svs_model=False, whole_audio=False):

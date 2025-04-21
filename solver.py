@@ -198,11 +198,11 @@ def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_par
                 # Here we're just using placeholders for inference from wav
                 batch_size = mel_tensor.size(0)
                 seq_len = mel_tensor.size(1)
-                dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(device)
+                dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(device)
                 dummy_durations = torch.ones(batch_size, seq_len).to(device)
                 dummy_f0 = torch.ones(batch_size, seq_len, 1).to(device) * 220.0  # Default F0
-                dummy_singer_ids = torch.zeros(batch_size).long().to(device)
-                dummy_language_ids = torch.zeros(batch_size).long().to(device)
+                dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(device)
+                dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(device)
                 
                 signal, f0_pred, final_phase, (s_h, s_n), _ = model(
                     dummy_phonemes, dummy_durations, dummy_f0, 
@@ -288,11 +288,11 @@ def render(args, model, path_mel_dir, path_gendir='gen', is_part=False):
                 # For SVSVocoder, provide dummy inputs for inference from mel
                 batch_size = mel.size(0)
                 seq_len = mel.size(1)
-                dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(args.device)
                 dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
                 dummy_f0 = torch.ones(batch_size, seq_len, 1).to(args.device) * 220.0
-                dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
-                dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
+                dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
                 
                 signal, f0_pred, _, (s_h, s_n), _ = model(
                     dummy_phonemes, dummy_durations, dummy_f0, 
@@ -351,11 +351,15 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
             print('--------')
             print('{}/{} - {}'.format(bidx, num_batches, fn))
 
-            # unpack data
+            # unpack data - FIX: Properly handle tensor types
             for k in data.keys():
                 if k != 'name':
                     if isinstance(data[k], torch.Tensor):
-                        data[k] = data[k].to(args.device).float()
+                        # Special handling for embedding indices (must remain integers)
+                        if k in ['singer_id', 'language_id', 'phonemes']:
+                            data[k] = data[k].to(args.device).long()
+                        else:
+                            data[k] = data[k].to(args.device).float()
             print('>>', data['name'][0])
 
             # forward
@@ -367,7 +371,7 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
                 if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
                     singer_ids = data['singer_id']
                     language_ids = data['language_id']
-                    phonemes = data['phonemes'].long()
+                    phonemes = data['phonemes']
                     durations = data['durations']
                     f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
                     
@@ -379,11 +383,11 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
                     # Fallback to mel input with dummy parameters
                     batch_size = data['mel'].size(0)
                     seq_len = data['mel'].size(1)
-                    dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                    dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(args.device)
                     dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
                     dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
-                    dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                    dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
+                    dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
                     
                     signal, f0_pred, _, (s_h, s_n), _ = model(
                         dummy_phonemes, dummy_durations, dummy_f0, 
@@ -505,21 +509,25 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
             saver.global_step_increment()
             optimizer.zero_grad()
 
-            # unpack data
+            # unpack data - FIX: Properly handle tensor types
             for k in data.keys():
                 if k != 'name':
                     if isinstance(data[k], torch.Tensor):
-                        data[k] = data[k].to(args.device).float()
+                        # Special handling for embedding indices (must remain integers)
+                        if k in ['singer_id', 'language_id', 'phonemes']:
+                            data[k] = data[k].to(args.device).long()
+                        else:
+                            data[k] = data[k].to(args.device).float()
             
             # forward
             if using_svs_model:
                 # For SVSVocoder
                 # Check if we have phonemes and other required fields
                 if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
-                    # Convert to appropriate types
-                    singer_ids = data['singer_id']
-                    language_ids = data['language_id']
-                    phonemes = data['phonemes'].long()
+                    # Use the properly typed tensors
+                    singer_ids = data['singer_id']  # Already long tensor
+                    language_ids = data['language_id']  # Already long tensor
+                    phonemes = data['phonemes']  # Already long tensor
                     durations = data['durations']
                     f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
                     
@@ -531,11 +539,11 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
                     # Fallback to mel input with dummy parameters
                     batch_size = data['mel'].size(0)
                     seq_len = data['mel'].size(1)
-                    dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                    dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(args.device)
                     dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
                     dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
-                    dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                    dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
+                    dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
                     
                     signal, f0_pred, _, _, _ = model(
                         dummy_phonemes, dummy_durations, dummy_f0, 
