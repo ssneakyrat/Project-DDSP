@@ -1,0 +1,32 @@
+data:
+  block_size: 240
+  duration: 2
+  sampling_rate: 24000
+  train_path: ./datasets
+  valid_path: ./datasets
+
+model:
+  n_mag_harmonic: 256
+  n_mag_noise: 80
+  n_harmonics: 150
+
+loss:
+  n_ffts: [1024, 512, 256, 128]
+
+device: cuda
+
+env:
+  expdir: exp/svs
+  gpu: 0
+  gpu_id: 0
+
+inference:
+  batch_size: 1
+
+train:
+  batch_size: 16
+  epochs: 1000000
+  interval_log: 100  # step
+  interval_save: 50  # epoch
+  interval_val: 50   # epoch
+  lr: 0.0005         # lower learning rate compared to DDSP
