@@ -61,11 +61,24 @@ class Phoneme2Control(nn.Module):
         singer_emb = self.singer_embedding(singer_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
         lang_emb = self.language_embedding(language_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
         
-        # Process continuous features
-        f0_emb = self.f0_projection(f0.unsqueeze(-1))
+        # Process F0 - downsample to match phoneme length
+        # This fixes the dimension mismatch by resampling F0 to match phoneme sequence length
+        if f0.size(1) != phonemes.size(1):
+            # Interpolate F0 to match phoneme length
+            f0_resampled = F.interpolate(
+                f0.unsqueeze(1),  # Add channel dim [B, 1, T_frames]
+                size=phonemes.size(1),  # Target length = phoneme length
+                mode='linear',
+                align_corners=False
+            ).squeeze(1)  # Remove channel dim [B, T_phones]
+        else:
+            f0_resampled = f0
+            
+        # Process continuous features with matching sequence lengths
+        f0_emb = self.f0_projection(f0_resampled.unsqueeze(-1))
         dur_emb = self.duration_projection(durations.unsqueeze(-1))
         
-        # Combine features
+        # Now all embeddings have the same sequence dimension and can be concatenated
         combined = torch.cat([phone_emb, singer_emb, lang_emb, f0_emb, dur_emb], dim=-1)
         fused = self.fusion_layer(combined)
         
