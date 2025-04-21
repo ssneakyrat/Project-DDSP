@@ -188,8 +188,7 @@ def apply_window_to_impulse_response(impulse_response,
     """Apply a window to an impulse response and put in causal form.
     Args:
         impulse_response: A series of impulse responses frames to window, of shape
-        [batch, n_frames, ir_size]. ---------> ir_size means size of filter_bank ??????
-        
+        [batch, n_frames, ir_size].
         window_size: Size of the window to apply in the time domain. If window_size
         is less than 1, it defaults to the impulse_response size.
         causal: Impulse response input is in causal form (peak in the middle).
@@ -198,7 +197,8 @@ def apply_window_to_impulse_response(impulse_response,
         dimension cropped to window_size if window_size is greater than 0 and less
         than ir_size.
     """
-    
+    # Move impulse_response to CUDA at the beginning
+    impulse_response = impulse_response.cuda()
     
     # If IR is in causal form, put it in zero-phase form.
     if causal:
@@ -206,24 +206,24 @@ def apply_window_to_impulse_response(impulse_response,
     
     # Get a window for better time/frequency resolution than rectangular.
     # Window defaults to IR size, cannot be bigger.
-    #ir_size = int(impulse_response.shape[-1])
     ir_size = int(impulse_response.size(-1))
     if (window_size <= 0) or (window_size > ir_size):
         window_size = ir_size
-    window = nn.Parameter(torch.hann_window(window_size), requires_grad = False).cuda()
-    # Zero pad the window and put in in zero-phase form.
     
+    # Create window on CUDA
+    window = nn.Parameter(torch.hann_window(window_size), requires_grad=False).cuda()
+    
+    # Zero pad the window and put in in zero-phase form.
     padding = ir_size - window_size
     if padding > 0:
         half_idx = (window_size + 1) // 2
         window = torch.cat([window[half_idx:],
-                            torch.zeros([padding]),
+                            torch.zeros([padding], device='cuda'),
                             window[:half_idx]], axis=0)
     else:
         window = window.roll((window.size(-1)+1)//2, -1)
         
     # Apply the window, to get new IR (both in zero-phase form).
-
     window = window.unsqueeze(0)
     impulse_response = impulse_response*window
     
