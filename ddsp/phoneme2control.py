@@ -74,9 +74,21 @@ class Phoneme2Control(nn.Module):
         else:
             f0_resampled = f0
             
+        # Process durations - also resample to match phoneme length
+        if durations.size(1) != phonemes.size(1):
+            # Interpolate durations to match phoneme length
+            durations_resampled = F.interpolate(
+                durations.unsqueeze(1),  # Add channel dim [B, 1, T_durations]
+                size=phonemes.size(1),  # Target length = phoneme length
+                mode='linear',  # Use nearest since durations are discrete counts
+                align_corners=False
+            ).squeeze(1)  # Remove channel dim [B, T_phones]
+        else:
+            durations_resampled = durations
+            
         # Process continuous features with matching sequence lengths
         f0_emb = self.f0_projection(f0_resampled.unsqueeze(-1))
-        dur_emb = self.duration_projection(durations.unsqueeze(-1))
+        dur_emb = self.duration_projection(durations_resampled.unsqueeze(-1))
         
         # Now all embeddings have the same sequence dimension and can be concatenated
         combined = torch.cat([phone_emb, singer_emb, lang_emb, f0_emb, dur_emb], dim=-1)
