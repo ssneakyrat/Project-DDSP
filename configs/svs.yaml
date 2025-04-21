@@ -27,6 +27,6 @@ train:
   batch_size: 16
   epochs: 1000000
   interval_log: 100  # step
-  interval_save: 50  # epoch
-  interval_val: 50   # epoch
+  interval_save: 5  # epoch
+  interval_val: 5   # epoch
   lr: 0.0005         # lower learning rate compared to DDSP

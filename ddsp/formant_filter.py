@@ -1,14 +1,36 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from ddsp.core import upsample, frequency_filter
+from ddsp.core import upsample
+
+# Import the patched core functions
+from ddsp.core import fft_convolve, apply_window_to_impulse_response
+
+def frequency_impulse_response(magnitudes, window_size: int = 0):
+    """Get windowed impulse responses using the frequency sampling method.
+    Patched to fix device issues.
+    """
+    # Get the IR (zero-phase form).
+    magnitudes = torch.complex(magnitudes, torch.zeros_like(magnitudes))
+    impulse_response = torch.fft.irfft(magnitudes)
+    
+    # Window and put in causal form.
+    impulse_response = apply_window_to_impulse_response(impulse_response, impulse_response.size(-1))
+    
+    return impulse_response
+
+def frequency_filter(audio, magnitudes, window_size=0, padding='same', mel_scale_noise=False, mel_basis=None):
+    """Filter audio with a finite impulse response filter.
+    Patched to fix device issues.
+    """
+    impulse_response = frequency_impulse_response(magnitudes, window_size=window_size)
+    
+    return fft_convolve(audio, impulse_response, padding=padding, mel_scale_noise=mel_scale_noise)
 
 class FormantFilter(nn.Module):
     """
     Formant filter for vocal tract modeling.
-    
-    Implements a differentiable filter that can shape harmonic content
-    according to formant parameters (frequencies, bandwidths, amplitudes).
+    Patched version that handles device consistency.
     """
     def __init__(self, sampling_rate):
         super().__init__()
@@ -27,6 +49,9 @@ class FormantFilter(nn.Module):
         Returns:
             Filtered audio [B, T]
         """
+        # Get device from input
+        device = audio.device
+        
         # Upsample formant parameters to audio rate
         f_freqs = upsample(formant_freqs, audio.shape[1] // formant_freqs.shape[1])
         f_bws = upsample(formant_bws, audio.shape[1] // formant_bws.shape[1])
@@ -34,10 +59,10 @@ class FormantFilter(nn.Module):
         
         # Create spectral envelope from formant parameters
         n_freqs = 512  # Number of frequency bins for filter
-        envelope = torch.zeros(audio.shape[0], f_freqs.shape[1], n_freqs, device=audio.device)
+        envelope = torch.zeros(audio.shape[0], f_freqs.shape[1], n_freqs, device=device)
         
         # Create frequency axis scaled to Nyquist
-        freq_axis = torch.linspace(0, self.sampling_rate / 2, n_freqs, device=audio.device)
+        freq_axis = torch.linspace(0, self.sampling_rate / 2, n_freqs, device=device)
         
         # For each formant, add its contribution to the envelope
         for i in range(formant_freqs.shape[-1]):

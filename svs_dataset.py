@@ -94,7 +94,8 @@ def get_svs_data_loaders(args, dataset_cls):
         dataset_dir=args.data.train_path,
         cache_dir="./cache/train",
         sample_rate=args.data.sampling_rate,
-        rebuild_cache=False
+        rebuild_cache=False,
+        max_files=100
     )
     
     # Create validation dataset
@@ -102,7 +103,8 @@ def get_svs_data_loaders(args, dataset_cls):
         dataset_dir=args.data.valid_path,
         cache_dir="./cache/valid",
         sample_rate=args.data.sampling_rate,
-        rebuild_cache=False
+        rebuild_cache=False,
+        max_files=10
     )
     
     # Wrap datasets
@@ -116,7 +118,8 @@ def get_svs_data_loaders(args, dataset_cls):
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=True
     )
     
     valid_loader = torch.utils.data.DataLoader(
@@ -124,7 +127,8 @@ def get_svs_data_loaders(args, dataset_cls):
         batch_size=args.inference.batch_size,
         shuffle=False,
         num_workers=2,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
     
     return train_loader, valid_loader

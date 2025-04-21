@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 
 from ddsp.svs_vocoder import SVSVocoder
 from ddsp.svs_loss import SVSHybridLoss
+from ddsp.formant_filter import FormantFilter
 
 def test_phoneme2control():
     """Test the Phoneme2Control module"""
@@ -65,9 +66,7 @@ def test_phoneme2control():
     print("Phoneme2Control test passed!")
 
 def test_formant_filter():
-    """Test the FormantFilter module"""
-    from ddsp.formant_filter import FormantFilter
-    
+    """Test the FormantFilter module with device-agnostic implementation"""
     # Define test parameters
     batch_size = 2
     audio_length = 24000
@@ -75,13 +74,13 @@ def test_formant_filter():
     n_formants = 5
     sampling_rate = 24000
     
-    # Create test inputs
+    # Create test inputs (explicitly on CPU)
     audio = torch.rand(batch_size, audio_length)
     formant_freqs = torch.rand(batch_size, n_frames, n_formants) * 5000 + 100  # 100-5100 Hz
     formant_bws = torch.rand(batch_size, n_frames, n_formants) * 500 + 50      # 50-550 Hz
     formant_amps = torch.softmax(torch.rand(batch_size, n_frames, n_formants), dim=-1)
     
-    # Create model
+    # Create model (patched version)
     model = FormantFilter(sampling_rate)
     
     # Forward pass
@@ -90,7 +89,9 @@ def test_formant_filter():
     # Check output shape
     assert filtered_audio.shape == audio.shape, "Filtered audio shape doesn't match input audio shape"
     
-    print("FormantFilter test passed!")
+    print("Patched FormantFilter test passed!")
+    
+    return filtered_audio
 
 def test_svs_vocoder():
     """Test the SVSVocoder module"""
