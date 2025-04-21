@@ -57,6 +57,10 @@ def extract_mel_from_audio(audio, args):
     
     return mel_np
 
+def is_svs_model(model):
+    """Check if the model is an SVS vocoder model."""
+    return model.__class__.__name__ == 'SVSVocoder'
+
 def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_part=False):
     """
     Perform inference directly from a WAV file by splitting into 2-second chunks,
@@ -187,7 +191,26 @@ def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_par
         
         # Forward pass with phase continuity
         with torch.no_grad():
-            signal, f0_pred, final_phase, (s_h, s_n) = model(mel_tensor, initial_phase)
+            # Check if SVS model or regular model
+            if is_svs_model(model):
+                # For SVSVocoder, we'll need to provide dummy inputs for phonemes, durations, etc.
+                # In real use, these would come from a text-to-phoneme module
+                # Here we're just using placeholders for inference from wav
+                batch_size = mel_tensor.size(0)
+                seq_len = mel_tensor.size(1)
+                dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(device)
+                dummy_durations = torch.ones(batch_size, seq_len).to(device)
+                dummy_f0 = torch.ones(batch_size, seq_len, 1).to(device) * 220.0  # Default F0
+                dummy_singer_ids = torch.zeros(batch_size).long().to(device)
+                dummy_language_ids = torch.zeros(batch_size).long().to(device)
+                
+                signal, f0_pred, final_phase, (s_h, s_n), _ = model(
+                    dummy_phonemes, dummy_durations, dummy_f0, 
+                    dummy_singer_ids, dummy_language_ids, initial_phase
+                )
+            else:
+                signal, f0_pred, final_phase, (s_h, s_n) = model(mel_tensor, initial_phase)
+            
             # Update initial_phase for next chunk
             initial_phase = final_phase
         
@@ -261,7 +284,22 @@ def render(args, model, path_mel_dir, path_gendir='gen', is_part=False):
             print(' mel:', mel.shape)
 
             # forward
-            signal, f0_pred, _, (s_h, s_n) = model(mel)
+            if is_svs_model(model):
+                # For SVSVocoder, provide dummy inputs for inference from mel
+                batch_size = mel.size(0)
+                seq_len = mel.size(1)
+                dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
+                dummy_f0 = torch.ones(batch_size, seq_len, 1).to(args.device) * 220.0
+                dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
+                dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                
+                signal, f0_pred, _, (s_h, s_n), _ = model(
+                    dummy_phonemes, dummy_durations, dummy_f0, 
+                    dummy_singer_ids, dummy_language_ids
+                )
+            else:
+                signal, f0_pred, _, (s_h, s_n) = model(mel)
 
             # path
             path_pred = os.path.join(path_gendir, 'pred', fn + '.wav')
@@ -316,12 +354,45 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
             # unpack data
             for k in data.keys():
                 if k != 'name':
-                    data[k] = data[k].to(args.device).float()
+                    if isinstance(data[k], torch.Tensor):
+                        data[k] = data[k].to(args.device).float()
             print('>>', data['name'][0])
 
             # forward
             st_time = time.time()
-            signal, f0_pred, _, (s_h, s_n) = model(data['mel'])
+            
+            if is_svs_model(model):
+                # For SVSVocoder
+                # Check if we have phonemes and other required fields
+                if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
+                    singer_ids = data['singer_id']
+                    language_ids = data['language_id']
+                    phonemes = data['phonemes'].long()
+                    durations = data['durations']
+                    f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+                    
+                    signal, f0_pred, _, (s_h, s_n), _ = model(
+                        phonemes, durations, f0, 
+                        singer_ids, language_ids
+                    )
+                else:
+                    # Fallback to mel input with dummy parameters
+                    batch_size = data['mel'].size(0)
+                    seq_len = data['mel'].size(1)
+                    dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                    dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
+                    dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+                    dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
+                    dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                    
+                    signal, f0_pred, _, (s_h, s_n), _ = model(
+                        dummy_phonemes, dummy_durations, dummy_f0, 
+                        dummy_singer_ids, dummy_language_ids
+                    )
+            else:
+                # For standard vocoders that just use mel input
+                signal, f0_pred, _, (s_h, s_n) = model(data['mel'])
+                
             ed_time = time.time()
 
             # crop
@@ -423,6 +494,9 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
     start_epoch = initial_global_step // num_batches if initial_global_step > 0 else 0
     saver.log_info(f'Starting from epoch: {start_epoch}')
     
+    # Check if we're using an SVS model
+    using_svs_model = is_svs_model(model)
+    
     for epoch in range(start_epoch, args.train.epochs):
         saver.log_info(f'Beginning epoch {epoch}/{args.train.epochs}')
         epoch_loss = 0.0
@@ -434,10 +508,42 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
             # unpack data
             for k in data.keys():
                 if k != 'name':
-                    data[k] = data[k].to(args.device).float()
+                    if isinstance(data[k], torch.Tensor):
+                        data[k] = data[k].to(args.device).float()
             
             # forward
-            signal, f0_pred, _, _,  = model(data['mel'])
+            if using_svs_model:
+                # For SVSVocoder
+                # Check if we have phonemes and other required fields
+                if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
+                    # Convert to appropriate types
+                    singer_ids = data['singer_id']
+                    language_ids = data['language_id']
+                    phonemes = data['phonemes'].long()
+                    durations = data['durations']
+                    f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+                    
+                    signal, f0_pred, _, _, _ = model(
+                        phonemes, durations, f0, 
+                        singer_ids, language_ids
+                    )
+                else:
+                    # Fallback to mel input with dummy parameters
+                    batch_size = data['mel'].size(0)
+                    seq_len = data['mel'].size(1)
+                    dummy_phonemes = torch.zeros(batch_size, seq_len).long().to(args.device)
+                    dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
+                    dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+                    dummy_singer_ids = torch.zeros(batch_size).long().to(args.device)
+                    dummy_language_ids = torch.zeros(batch_size).long().to(args.device)
+                    
+                    signal, f0_pred, _, _, _ = model(
+                        dummy_phonemes, dummy_durations, dummy_f0, 
+                        dummy_singer_ids, dummy_language_ids
+                    )
+            else:
+                # For standard vocoders
+                signal, f0_pred, _, _ = model(data['mel'])
 
             # loss
             loss, (loss_mss, loss_f0) = loss_func(
@@ -495,7 +601,7 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
         # Save model at specified epoch intervals
         if (epoch + 1) % args.train.interval_save == 0:
             saver.save_models(
-                {'vocoder': model}, postfix=f'epoch_{epoch+1}')
+                {'vocoder': model}, postfix=f'{saver.global_step}')
             saver.log_info(f'Model saved at epoch {epoch+1}')
         
         # Validate at specified epoch intervals

@@ -10,8 +10,7 @@ import shutil
 import time
 import glob
 from logger import utils, report
-from solver import train, test, render
-
+from solver import train, test, render, is_svs_model
 from ddsp.vocoder import SawSub, SawSinSub, Sins, DWS, Full
 from ddsp.loss import HybridLoss
 from ddsp.pseudo_mel import PseudoMelGenerator, FormantParameterPredictor
@@ -40,7 +39,7 @@ def parse_args(args=None, namespace=None):
         "--model",
         type=str,
         required=True,
-        help="Models. Options: SawSinSub/Sins/DWS/Full/SinsSub/SawSub",
+        help="Models. Options: SawSinSub/Sins/DWS/Full/SinsSub/SawSub/SVSFormant",
     )
     parser.add_argument(
         "-k",
@@ -99,12 +98,13 @@ def custom_collate(batch):
     # Find max lengths in the batch
     max_audio_len = max(item['audio'].size(0) for item in batch)
     max_f0_len = max(item['f0'].size(0) for item in batch)
+    max_mel_len = max(item['mel'].size(0) for item in batch)
     
     # Initialize batch tensors with correct dimensions
     batch_dict = {
         'name': [item['name'] for item in batch],
         'audio': torch.zeros(batch_size, max_audio_len),
-        'mel': torch.stack([item['mel'] for item in batch]),
+        'mel': torch.zeros(batch_size, max_mel_len, mel_shape[1]),
     }
     
     # Handle f0 based on its actual dimensions
@@ -117,8 +117,10 @@ def custom_collate(batch):
     for i, item in enumerate(batch):
         audio_len = item['audio'].size(0)
         f0_len = item['f0'].size(0)
+        mel_len = item['mel'].size(0)
         
         batch_dict['audio'][i, :audio_len] = item['audio']
+        batch_dict['mel'][i, :mel_len] = item['mel']
         
         # Handle f0 assignment based on its dimensions
         if len(f0_shape) == 1:  # f0 is 1D
@@ -127,6 +129,64 @@ def custom_collate(batch):
             batch_dict['f0'][i, :f0_len, ...] = item['f0']
     
     return batch_dict
+
+def svs_collate_fn(batch):
+    """
+    Custom collate function for SVS dataset that handles variable-length tensors.
+    """
+    # Get batch size
+    batch_size = len(batch)
+    
+    # Initialize output dictionary with lists
+    collated = {
+        'name': [item['name'] for item in batch],
+    }
+    
+    # Find max lengths for various sequence fields
+    max_audio_len = max(item['audio'].size(0) for item in batch)
+    max_phoneme_len = max(item['phonemes'].size(0) for item in batch)
+    max_f0_len = max(item['f0'].size(0) for item in batch)
+    max_duration_len = max(item['durations'].size(0) for item in batch)
+    
+    # Initialize tensors with proper shapes
+    collated['audio'] = torch.zeros(batch_size, max_audio_len)
+    collated['phonemes'] = torch.zeros(batch_size, max_phoneme_len, dtype=torch.long)
+    collated['f0'] = torch.zeros(batch_size, max_f0_len)
+    collated['durations'] = torch.zeros(batch_size, max_duration_len)
+    
+    # Process singer_id and language_id
+    collated['singer_id'] = torch.zeros(batch_size, dtype=torch.long)
+    collated['language_id'] = torch.zeros(batch_size, dtype=torch.long)
+    
+    # If mel spectrograms are included
+    if 'mel' in batch[0]:
+        mel_dim = batch[0]['mel'].size(-1)
+        max_mel_len = max(item['mel'].size(0) for item in batch)
+        collated['mel'] = torch.zeros(batch_size, max_mel_len, mel_dim)
+    
+    # Fill the tensors with actual data
+    for i, item in enumerate(batch):
+        # Handle variable-length sequences with proper padding
+        audio_len = item['audio'].size(0)
+        phoneme_len = item['phonemes'].size(0)
+        f0_len = item['f0'].size(0)
+        duration_len = item['durations'].size(0)
+        
+        collated['audio'][i, :audio_len] = item['audio']
+        collated['phonemes'][i, :phoneme_len] = item['phonemes']
+        collated['f0'][i, :f0_len] = item['f0']
+        collated['durations'][i, :duration_len] = item['durations']
+        
+        # Handle scalar values
+        collated['singer_id'][i] = item['singer_id']
+        collated['language_id'][i] = item['language_id']
+        
+        # Handle mel spectrograms if present
+        if 'mel' in item:
+            mel_len = item['mel'].size(0)
+            collated['mel'][i, :mel_len] = item['mel']
+    
+    return collated
 
 # Define the DatasetWrapper at module level (outside any function)
 class DatasetWrapper(torch.utils.data.Dataset):
@@ -139,15 +199,99 @@ class DatasetWrapper(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.dataset[idx]
         # The solver.py expects 'name' instead of 'filename'
-        filename = item.pop('filename')
+        filename = item.pop('filename') if 'filename' in item else f"sample_{idx}"
         # Handle the case where filename might already be a list
         if isinstance(filename, list):
             item['name'] = filename
         else:
             item['name'] = [filename]
         return item
+    
+import numpy as np
 
-def get_data_loaders(args, whole_audio=False):
+class SVSDatasetWrapper(torch.utils.data.Dataset):
+    """
+    Dataset wrapper for Singing Voice Synthesis
+    
+    Takes the existing dataset and transforms it to the format required by the SVS vocoder
+    """
+    def __init__(self, dataset):
+        """
+        Initialize the SVS dataset wrapper
+        
+        Args:
+            dataset: The base dataset containing audio, phonemes, F0, singer IDs, etc.
+        """
+        self.dataset = dataset
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        
+        # Extract and ensure consistent format for all required fields
+        # Get the filename or use a default one
+        filename = item.get('filename', f"sample_{idx}")
+        
+        # Get singer_id and ensure it's a tensor
+        if 'singer_id' in item:
+            singer_id = item['singer_id']
+            if isinstance(singer_id, (list, np.ndarray)):
+                singer_id = singer_id[0] if len(singer_id) > 0 else 0
+            singer_id = torch.tensor(singer_id, dtype=torch.long)
+        else:
+            singer_id = torch.tensor(0, dtype=torch.long)
+        
+        # Get language_id and ensure it's a tensor
+        if 'language_id' in item:
+            language_id = item['language_id']
+            if isinstance(language_id, (list, np.ndarray)):
+                language_id = language_id[0] if len(language_id) > 0 else 0
+            language_id = torch.tensor(language_id, dtype=torch.long)
+        else:
+            language_id = torch.tensor(0, dtype=torch.long)
+        
+        # Extract phoneme sequence
+        if 'phone_seq' in item:
+            phone_seq = item['phone_seq']
+            # Ensure phone_seq is a tensor
+            if not isinstance(phone_seq, torch.Tensor):
+                phone_seq = torch.tensor(phone_seq, dtype=torch.long)
+        else:
+            # Create dummy phoneme data if not available
+            phone_seq = torch.zeros(100, dtype=torch.long)
+        
+        # Calculate durations from phone_seq
+        if isinstance(phone_seq, torch.Tensor) and phone_seq.dim() == 1:
+            # Simple approach: create constant duration for each phoneme
+            durations = torch.ones_like(phone_seq, dtype=torch.float)
+        else:
+            # Default durations if we can't determine from phone_seq
+            durations = torch.ones(100, dtype=torch.float)
+        
+        # Get F0 data
+        if 'f0' in item:
+            f0 = item['f0']
+            if not isinstance(f0, torch.Tensor):
+                f0 = torch.tensor(f0, dtype=torch.float)
+        else:
+            # Create dummy F0 data if not available
+            f0 = torch.ones(100, dtype=torch.float) * 220.0
+        
+        # Construct the output with all required fields for SVS
+        return {
+            'name': filename,
+            'audio': item['audio'] if isinstance(item['audio'], torch.Tensor) else torch.tensor(item['audio'], dtype=torch.float),
+            'phonemes': phone_seq,
+            'durations': durations,
+            'f0': f0,
+            'singer_id': singer_id,
+            'language_id': language_id,
+            'mel': item['mel'] if isinstance(item['mel'], torch.Tensor) else torch.tensor(item['mel'], dtype=torch.float)
+        }
+
+def get_data_loaders(args, is_svs_model=False, whole_audio=False):
     """
     Get data loaders for training and validation.
     """
@@ -164,7 +308,7 @@ def get_data_loaders(args, whole_audio=False):
         n_mels=80,
         hop_length=args.data.block_size,
         win_length=1024,
-        max_files=10000
+        max_files=None
     )
     
     # Create validation dataset
@@ -180,25 +324,35 @@ def get_data_loaders(args, whole_audio=False):
         max_files=10
     )
     
-    # Create data loaders with custom collate function
+    # Choose the appropriate wrapper and collate function based on the model type
+    if is_svs_model:
+        wrapper_cls = SVSDatasetWrapper
+        collate_fn = svs_collate_fn
+        print(" > Using SVS dataset wrapper and collate function")
+    else:
+        wrapper_cls = DatasetWrapper
+        collate_fn = custom_collate
+        print(" > Using standard dataset wrapper and collate function")
+    
+    # Create data loaders with appropriate wrapper and collate function
     train_loader = torch.utils.data.DataLoader(
-        DatasetWrapper(train_dataset),
+        wrapper_cls(train_dataset),
         batch_size=args.train.batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
-        collate_fn=custom_collate
+        collate_fn=collate_fn
     )
     
     valid_loader = torch.utils.data.DataLoader(
-        DatasetWrapper(valid_dataset),
+        wrapper_cls(valid_dataset),
         batch_size=args.inference.batch_size,
         shuffle=False,
         num_workers=2,
         pin_memory=True,
         persistent_workers=True,
-        collate_fn=custom_collate
+        collate_fn=collate_fn
     )
     
     return train_loader, valid_loader
@@ -347,6 +501,13 @@ if __name__ == '__main__':
     else:
         raise ValueError(f" [x] Unknown Model: {cmd.model}")
     
+    # Check if we're using an SVS model
+    using_svs_model = is_svs_model(model)
+    
+    # Set default loss function if not already set
+    if 'loss_func' not in locals():
+        loss_func = HybridLoss(args.loss.n_ffts)
+    
     # load parameters from checkpoint if available
     initial_global_step = -1
     if latest_ckpt:
@@ -366,9 +527,6 @@ if __name__ == '__main__':
         print(f"Loading model from specified checkpoint: {cmd.model_ckpt}")
         model = utils.load_model_params(cmd.model_ckpt, model, args.device)
 
-    # loss
-    loss_func = HybridLoss(args.loss.n_ffts)
-
     # device
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if args.device == 'cuda':
@@ -380,9 +538,9 @@ if __name__ == '__main__':
     loader_train = None
     loader_valid = None
     if cmd.stage in ['training', 'validation']:
-        # Load data loaders only for training and validation
+        # Load data loaders with appropriate mode for the model type
         print(" > Loading datasets for", cmd.stage)
-        loader_train, loader_valid = get_data_loaders(args, whole_audio=False)
+        loader_train, loader_valid = get_data_loaders(args, is_svs_model=using_svs_model, whole_audio=False)
         
     # stage
     if cmd.stage == 'training':
