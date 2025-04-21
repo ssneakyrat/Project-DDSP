@@ -4,11 +4,143 @@ import time
 import shutil
 import numpy as np
 import soundfile as sf
+import librosa
 
 import torch
 
 from logger.saver import Saver
 from logger import utils
+
+
+def extract_mel_from_audio(audio, args):
+    """
+    Extract mel-spectrogram from audio signal using the same approach as in dataset.py.
+    
+    Args:
+        audio: Audio signal (numpy array)
+        args: Configuration arguments
+    
+    Returns:
+        mel: Mel-spectrogram
+    """
+    import torch
+    import torchaudio
+    import numpy as np
+    
+    # Convert audio to tensor
+    audio_tensor = torch.FloatTensor(audio).unsqueeze(0)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    audio_tensor = audio_tensor.to(device)
+    
+    # Initialize mel transform with the same parameters as in dataset.py
+    mel_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=args.data.sampling_rate,
+        n_fft=1024,
+        win_length=1024,
+        hop_length=args.data.block_size,
+        f_min=40,  # FMIN from dataset.py
+        f_max=12000,  # FMAX from dataset.py
+        n_mels=80,
+        power=2.0
+    ).to(device)
+    
+    # Extract mel spectrogram
+    mel_spec = mel_transform(audio_tensor)
+    mel_db = torchaudio.transforms.AmplitudeToDB()(mel_spec)
+    
+    # Normalize mel spectrogram as in dataset.py
+    mel_spec = mel_db - mel_db.min()
+    mel_spec = mel_spec / (mel_spec.max() + 1e-8)
+    
+    # Move mel to CPU and convert to numpy with the same shape as in dataset.py
+    mel_np = mel_spec.squeeze(0).cpu().numpy().T  # Transpose to get (time, n_mels)
+    
+    return mel_np
+
+def inference_from_wav(args, model, path_wav_file, path_gendir='wav_gen', is_part=False):
+    """
+    Perform inference directly from a WAV file.
+    
+    Args:
+        args: Configuration arguments
+        model: The vocoder model
+        path_wav_file: Path to input WAV file
+        path_gendir: Directory to save generated audio
+        is_part: Whether to output individual harmonic and noise components
+    """
+    print(' [*] inferring from WAV file...')
+    model.eval()
+    
+    try:
+        import torchaudio
+    except ImportError:
+        print(" [!] torchaudio is required for WAV inference. Please install it.")
+        return
+    
+    # Check if the input file exists
+    if not os.path.exists(path_wav_file):
+        print(f" [x] Input WAV file does not exist: {path_wav_file}")
+        return
+    
+    # Extract filename from path
+    fn = os.path.basename(path_wav_file).split('.')[0]
+    print(f" > Processing file: {fn}")
+    
+    # Load WAV file
+    audio, sr = sf.read(path_wav_file)
+    
+    # Resample if necessary
+    if sr != args.data.sampling_rate:
+        print(f" > Resampling from {sr} to {args.data.sampling_rate}")
+        import librosa
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=args.data.sampling_rate)
+    
+    # Convert to mono if stereo
+    if len(audio.shape) > 1 and audio.shape[1] > 1:
+        print(" > Converting stereo to mono")
+        audio = audio.mean(axis=1)
+    
+    # Normalize audio
+    audio = audio / np.max(np.abs(audio))
+    
+    # Extract mel-spectrogram using the dataset's approach
+    mel = extract_mel_from_audio(audio, args)
+    
+    # Convert to tensor
+    mel_tensor = torch.from_numpy(mel).float().to(args.device).unsqueeze(0)
+    print(' > mel shape:', mel_tensor.shape)
+    
+    # Forward pass
+    with torch.no_grad():
+        signal, f0_pred, _, (s_h, s_n) = model(mel_tensor)
+    
+    # Create output directories
+    os.makedirs(path_gendir, exist_ok=True)
+    os.makedirs(os.path.join(path_gendir, 'pred'), exist_ok=True)
+    
+    path_pred = os.path.join(path_gendir, 'pred', fn + '_synthesized.wav')
+    
+    if is_part:
+        os.makedirs(os.path.join(path_gendir, 'part'), exist_ok=True)
+        path_pred_n = os.path.join(path_gendir, 'part', fn + '-noise.wav')
+        path_pred_h = os.path.join(path_gendir, 'part', fn + '-harmonic.wav')
+    
+    # Convert to numpy
+    pred = utils.convert_tensor_to_numpy(signal)
+    
+    if is_part:
+        pred_n = utils.convert_tensor_to_numpy(s_n)
+        pred_h = utils.convert_tensor_to_numpy(s_h)
+    
+    # Save output
+    print(f" > Saving output to: {path_pred}")
+    sf.write(path_pred, pred, args.data.sampling_rate)
+    
+    if is_part:
+        sf.write(path_pred_n, pred_n, args.data.sampling_rate)
+        sf.write(path_pred_h, pred_h, args.data.sampling_rate)
+    
+    print(" [*] Inference complete.")
 
 
 def render(args, model, path_mel_dir, path_gendir='gen', is_part=False):

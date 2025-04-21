@@ -5,3 +5,5 @@ usage.txt
 cache/
 exp/
 *.log
+output/
+*.wav

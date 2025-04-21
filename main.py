@@ -31,7 +31,7 @@ def parse_args(args=None, namespace=None):
         "--stage",
         type=str,
         required=True,
-        help="Stages. Options: training/inference",
+        help="Stages. Options: training/inference/validation/wav_inference",
     )
     parser.add_argument(
         "-m",
@@ -72,6 +72,13 @@ def parse_args(args=None, namespace=None):
         "--fresh",
         action="store_true",
         help="Start a fresh training run (discard previous checkpoints)",
+    )
+    parser.add_argument(
+        "-w",
+        "--wav_file",
+        type=str,
+        required=False,
+        help="[wav_inference] path to input WAV file",
     )
     return parser.parse_args(args=args, namespace=namespace)
 
@@ -337,8 +344,13 @@ if __name__ == '__main__':
     model.to(args.device)
     loss_func.to(args.device)
 
-    # datas
-    loader_train, loader_valid = get_data_loaders(args, whole_audio=False)
+    # Only load datasets for stages that need them
+    loader_train = None
+    loader_valid = None
+    if cmd.stage in ['training', 'validation']:
+        # Load data loaders only for training and validation
+        print(" > Loading datasets for", cmd.stage)
+        loader_train, loader_valid = get_data_loaders(args, whole_audio=False)
         
     # stage
     if cmd.stage == 'training':
@@ -364,5 +376,24 @@ if __name__ == '__main__':
             path_mel_dir=cmd.input_dir, 
             path_gendir=output_dir,
             is_part=cmd.is_part)
+    elif cmd.stage == 'wav_inference':
+        if not cmd.model_ckpt:
+            raise ValueError(" [x] --model_ckpt is required for wav_inference stage")
+        if not cmd.wav_file:
+            raise ValueError(" [x] --wav_file is required for wav_inference stage")
+        
+        output_dir = 'wav_infer_gen'
+        if cmd.output_dir:
+            output_dir = cmd.output_dir
+        
+        # Import the new function here to ensure it's available
+        from solver import inference_from_wav
+        
+        inference_from_wav(
+            args,
+            model,
+            path_wav_file=cmd.wav_file,
+            path_gendir=output_dir,
+            is_part=cmd.is_part)
     else:
-          raise ValueError(f" [x] Unkown Stage: {cmd.stage }")
+          raise ValueError(f" [x] Unknown Stage: {cmd.stage }")
