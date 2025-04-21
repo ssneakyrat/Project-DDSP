@@ -14,7 +14,9 @@ from solver import train, test, render
 
 from ddsp.vocoder import SawSub, SawSinSub, Sins, DWS, Full
 from ddsp.loss import HybridLoss
-
+from ddsp.pseudo_mel import PseudoMelGenerator, FormantParameterPredictor
+from ddsp.svs_vocoder import SVSVocoder
+from ddsp.svs_loss import SVSHybridLoss
 
 def parse_args(args=None, namespace=None):
     """Parse command-line arguments."""
@@ -311,7 +313,37 @@ if __name__ == '__main__':
         model = SawSub(
             sampling_rate=args.data.sampling_rate,
             block_size=args.data.block_size)
-
+    elif cmd.model == 'SVSFormant':
+        # Get dataset to determine vocabulary sizes if not specified
+        from dataset import SingingVoiceDataset
+        temp_dataset = SingingVoiceDataset(
+            dataset_dir=args.data.train_path,
+            cache_dir="./cache/temp",
+            rebuild_cache=False,
+        )
+        
+        # Use dataset info or config values
+        num_phonemes = getattr(args.model, 'num_phonemes', len(temp_dataset.phone_map) + 1)  # +1 for padding
+        num_singers = getattr(args.model, 'num_singers', len(temp_dataset.singer_map))
+        num_languages = getattr(args.model, 'num_languages', len(temp_dataset.language_map))
+        
+        print(f" > Using vocabulary sizes: {num_phonemes} phones, {num_singers} singers, {num_languages} languages")
+        
+        model = SVSVocoder(
+            sampling_rate=args.data.sampling_rate,
+            block_size=args.data.block_size,
+            n_mag_harmonic=args.model.n_mag_harmonic,
+            n_mag_noise=args.model.n_mag_noise,
+            n_harmonics=args.model.n_harmonics,
+            num_phonemes=num_phonemes,
+            num_singers=num_singers,
+            num_languages=num_languages,
+            n_mels=getattr(args.model, 'pseudo_mel_dim', 80),
+            n_formants=getattr(args.model, 'n_formants', 5)
+        )
+        
+        # Use the SVS hybrid loss instead of normal hybrid loss
+        loss_func = SVSHybridLoss(args.loss.n_ffts, args.data.sampling_rate)
     else:
         raise ValueError(f" [x] Unknown Model: {cmd.model}")
     

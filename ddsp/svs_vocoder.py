@@ -1,11 +1,13 @@
+# ddsp/svs_vocoder.py - Enhanced with formant filtering
+
 import torch
 import torch.nn as nn
 import numpy as np
 
-from ddsp.phoneme2control import Phoneme2Control
-from ddsp.formant_filter import FormantFilter, apply_formant_filter_batch
+from ddsp.formant_filter import FormantFilter
 from ddsp.modules import HarmonicOscillator
 from ddsp.core import scale_function, upsample, frequency_filter
+from ddsp.mel2control import Mel2Control
 
 class SVSVocoder(nn.Module):
     def __init__(self, 
@@ -17,10 +19,11 @@ class SVSVocoder(nn.Module):
                  num_phonemes,
                  num_singers,
                  num_languages,
-                 n_mels=80):
+                 n_mels=80,
+                 n_formants=5):
         super().__init__()
         
-        print(' [Model] Singing Voice Synthesis (SVS) Vocoder')
+        print(' [Model] Enhanced Singing Voice Synthesis (SVS) Vocoder with Formant Filtering')
         
         # Parameters
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
@@ -35,14 +38,28 @@ class SVSVocoder(nn.Module):
             'noise_magnitude': n_mag_noise
         }
         
-        # Phoneme to control parameters
-        self.phoneme2ctrl = Phoneme2Control(
+        # Import here to avoid circular imports
+        from ddsp.pseudo_mel import PseudoMelGenerator, FormantParameterPredictor
+        
+        # Pseudo-mel generator
+        self.pseudo_mel_generator = PseudoMelGenerator(
             num_phonemes=num_phonemes,
             num_singers=num_singers,
             num_languages=num_languages,
-            output_splits=self.control_splits,
-            hidden_dim=256
+            hidden_dim=64,
+            mel_dims=n_mels
         )
+        
+        # Formant parameter predictor
+        self.formant_predictor = FormantParameterPredictor(
+            num_phonemes=num_phonemes,
+            hidden_dim=32,
+            n_formants=n_formants,
+            mel_dims=n_mels
+        )
+        
+        # Mel2Control for synthesis parameters
+        self.mel2ctrl = Mel2Control(n_mels, self.control_splits)
         
         # Harmonic Synthesizer
         self.harmonic_synthesizer = HarmonicOscillator(sampling_rate)
@@ -52,7 +69,7 @@ class SVSVocoder(nn.Module):
         
     def forward(self, phonemes, durations, f0_in, singer_ids, language_ids, initial_phase=None):
         """
-        Forward pass of the SVS vocoder
+        Forward pass of the SVS vocoder with formant filtering
         
         Args:
             phonemes: Phoneme sequence [B, T_phones]
@@ -69,9 +86,15 @@ class SVSVocoder(nn.Module):
             components: Tuple of (harmonic, noise) components
             formant_params: Tuple of formant parameters
         """
-        # Generate control parameters and formant parameters
-        ctrls, formant_params = self.phoneme2ctrl(
+        # Generate pseudo-mel representation
+        pseudo_mel, hidden_states = self.pseudo_mel_generator(
             phonemes, durations, f0_in, singer_ids, language_ids)
+        
+        # Predict formant parameters
+        formant_params = self.formant_predictor(pseudo_mel, hidden_states, phonemes)
+        
+        # Generate control parameters from pseudo-mel
+        ctrls = self.mel2ctrl(pseudo_mel)
         
         # Extract and process control parameters
         f0 = ctrls['f0']
