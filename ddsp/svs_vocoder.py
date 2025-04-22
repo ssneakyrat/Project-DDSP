@@ -5,7 +5,7 @@ import torch.nn as nn
 import numpy as np
 
 from ddsp.formant_filter import FormantFilter
-from ddsp.modules import HarmonicOscillator
+from ddsp.formant_harmonic_oscillator import FormantHarmonicOscillator
 from ddsp.core import scale_function, upsample, frequency_filter
 from ddsp.mel2control import Mel2Control
 
@@ -60,10 +60,7 @@ class SVSVocoder(nn.Module):
         self.mel2ctrl = Mel2Control(n_mels, self.control_splits)
         
         # Harmonic Synthesizer
-        self.harmonic_synthesizer = HarmonicOscillator(sampling_rate)
-        
-        # Formant Filter
-        self.formant_filter = FormantFilter(sampling_rate)
+        self.harmonic_synthesizer = FormantHarmonicOscillator(sampling_rate)
         
     def forward(self, using_svs_model, phonemes=None, f0_in=None, singer_ids=None, language_ids=None, initial_phase=None, mel=None):
         """
@@ -130,15 +127,18 @@ class SVSVocoder(nn.Module):
         f0 = upsample(f0, self.block_size)
         amplitudes = upsample(amplitudes, self.block_size)
         
-        # Generate harmonic component
-        harmonic, phase = self.harmonic_synthesizer(f0, amplitudes, initial_phase)
+        # Generate harmonic component with integrated formant filtering
+        harmonic, phase = self.harmonic_synthesizer(
+            f0, 
+            amplitudes, 
+            formant_params[0],  # formant_freqs
+            formant_params[1],  # formant_bws
+            formant_params[2],  # formant_amps
+            initial_phase
+        )
         
         # Apply harmonic shaping
         harmonic = frequency_filter(harmonic, harmonic_magnitude)
-        
-        print( 'Apply formant filtering to harmonic component' )
-        # Apply formant filtering to harmonic component
-        harmonic = self.formant_filter(harmonic, *formant_params)
         
         print( 'Generate and shape noise component' )
         # Generate and shape noise component
