@@ -28,7 +28,13 @@ class LightningModel(pl.LightningModule):
             n_harmonics=config['model']['n_harmonics']
         )
 
-        self.loss_fn = HybridLoss(config['loss']['n_ffts'])
+        # Initialize loss function with mel spectrogram loss
+        self.loss_fn = HybridLoss(
+            n_ffts=config['loss']['n_ffts'],
+            sample_rate=config['model']['sample_rate'],
+            n_mels=config['model']['n_mels'],  # Default to 80 if not specified
+            mel_weight=config['loss']['mel_weight'],  # Default weight
+        )
 
         ''' dummy
         # Initialize model
@@ -70,8 +76,9 @@ class LightningModel(pl.LightningModule):
         #print('signal:', signal.shape)
         #print('f0_pred:', f0_pred.shape)
 
+        # Compute Loss with mel input if available
         loss_dict = self.loss_fn(
-            signal, batch['audio'], f0_pred, batch['f0'])
+            signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
 
         # Log losses
         for loss_name, loss_value in loss_dict.items():
@@ -81,6 +88,9 @@ class LightningModel(pl.LightningModule):
         total_loss = loss_dict['loss']
         self.train_loss = total_loss
         
+        #if self.current_epoch % self.config['logging']['audio_log_every_n_epoch'] == 0:
+        #    self._log_audio(batch, signal, 'train')
+
         return total_loss
     
     def validation_step(self, batch, batch_idx):
@@ -90,7 +100,7 @@ class LightningModel(pl.LightningModule):
 
         # Compute Loss
         loss_dict = self.loss_fn(
-            signal, batch['audio'], f0_pred, batch['f0'])
+            signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
         
         # Log losses
         for loss_name, loss_value in loss_dict.items():

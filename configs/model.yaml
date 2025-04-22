@@ -23,6 +23,7 @@ model:
 
 loss:
   n_ffts: [1024, 512, 256, 128]
+  mel_weight: 0.5  # Weight for mel spectrogram loss
 
 training:
   learning_rate: 0.002
@@ -30,7 +31,7 @@ training:
   lr_scheduler:
     type: "exponential"
     gamma: 0.99
-  epochs: 100
+  epochs: 1000000000
   gradient_clip_val: 1.0
   precision: 32  # 16-bit training causes nan
 
@@ -42,4 +43,5 @@ logging:
   save_top_k: 3
   monitor: "val_loss"
   mode: "min"
-  check_val_every_n_epoch: 50
+  check_val_every_n_epoch: 5
+  audio_log_every_n_epoch: 5

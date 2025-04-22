@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from ddsp.melception import Melception
 from ddsp.mel2control import Mel2Control
 from ddsp.modules import HarmonicOscillator
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
@@ -27,7 +28,7 @@ class Synth(nn.Module):
             'harmonic_magnitude': n_mag_harmonic,
             'noise_magnitude': n_mag_noise
         }
-        self.mel2ctrl = Mel2Control(n_mels, split_map)
+        self.mel2ctrl = Melception(n_mels, split_map)
 
         # Harmonic Synthsizer
         self.harmonic_synthsizer = HarmonicOscillator(sampling_rate)
