@@ -1,0 +1,45 @@
+dataset:
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  train_files: null  # Set to a number for development
+  val_files: 10 #null  # Set to a number for development
+
+model:
+  hidden_size: 512
+  n_layers: 6
+  dropout: 0.1
+  n_mels: 80
+  sample_rate: 24000
+  context_window_sec: 2
+  hop_length: 240
+  win_length: 1024
+  fmin: 40
+  fmax: 12000
+  n_mag_harmonic: 256
+  n_mag_noise: 80
+  n_harmonics: 150
+
+loss:
+  n_ffts: [1024, 512, 256, 128]
+
+training:
+  learning_rate: 0.002
+  weight_decay: 0.0001
+  lr_scheduler:
+    type: "exponential"
+    gamma: 0.99
+  epochs: 100
+  gradient_clip_val: 1.0
+  precision: 32  # 16-bit training causes nan
+
+logging:
+  log_every_n_steps: 50
+  save_dir: "logs"
+  name: "singing_voice_model"
+  checkpoint_dir: "checkpoints"
+  save_top_k: 3
+  monitor: "val_loss"
+  mode: "min"
+  check_val_every_n_epoch: 50

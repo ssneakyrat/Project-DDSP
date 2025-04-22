@@ -7,3 +7,6 @@ exp/
 *.log
 output/
 *.wav
+logs/
+checkpoints/
+*.ipynb

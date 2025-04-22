@@ -595,6 +595,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
     def run_stage1_preprocessing(self, tasks):
         """Run Stage 1: Multiprocessing for file loading and initial processing."""
         # Process files in parallel
+        print( 'num worker', self.num_workers)
         max_workers = self.num_workers if self.num_workers > 0 else min(32, os.cpu_count() + 4)
         
         logger.info(f"Stage 1: Processing files with {max_workers} workers")
@@ -737,7 +738,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         }
 
 def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_workers=True, 
-                 max_files=None, dataset_workers=None, device='cuda'):
+                 max_files=None, device='cuda', collate_fn=None, shuffle=True):
     """
     Get a dataloader for the singing voice dataset.
     
@@ -758,17 +759,18 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         win_length=WIN_LENGTH,
         fmin=FMIN,
         fmax=FMAX,
-        num_workers=dataset_workers,
-        device=device
+        num_workers=num_workers,
+        device=device,
     )
     
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=persistent_workers if num_workers > 0 else False
+        persistent_workers=persistent_workers if num_workers > 0 else False,
+        collate_fn=collate_fn
     )
     return dataloader, dataset
 
