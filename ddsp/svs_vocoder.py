@@ -46,16 +46,14 @@ class SVSVocoder(nn.Module):
             num_phonemes=num_phonemes,
             num_singers=num_singers,
             num_languages=num_languages,
-            hidden_dim=64,
             mel_dims=n_mels
         )
         
         # Formant parameter predictor
         self.formant_predictor = FormantParameterPredictor(
-            num_phonemes=num_phonemes,
+            input_channel=n_mels,
             hidden_dim=32,
             n_formants=n_formants,
-            mel_dims=n_mels
         )
         
         # Mel2Control for synthesis parameters (for standard mel input)
@@ -94,21 +92,21 @@ class SVSVocoder(nn.Module):
         # Handling different input modes
         if using_svs_model:
             # Full SVS mode with linguistic inputs
-            return self.forward_svs(phonemes, mel, f0_in, singer_ids, language_ids, initial_phase)
+            return self.forward_svs(phonemes, f0_in, singer_ids, language_ids, initial_phase)
         else:
             # Compatibility mode: main.py with just mel input
             return self.forward_mel(mel, initial_phase)
             
-    def forward_svs(self, phonemes, mel, f0_in, singer_ids, language_ids, initial_phase=None):
+    def forward_svs(self, phonemes, f0_in, singer_ids, language_ids, initial_phase=None):
         """
         Full SVS forward pass with linguistic inputs
         """
         # Generate pseudo-mel representation
-        pseudo_mel, hidden_states = self.pseudo_mel_generator(
-            phonemes, mel, f0_in, singer_ids, language_ids)
+        pseudo_mel = self.pseudo_mel_generator(
+            phonemes, f0_in, singer_ids, language_ids)
         
         # Predict formant parameters
-        formant_params = self.formant_predictor(pseudo_mel, hidden_states, mel)
+        formant_params = self.formant_predictor(pseudo_mel)
         
         # Generate control parameters from pseudo-mel
         ctrls = self.mel2ctrl(pseudo_mel)
