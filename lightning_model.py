@@ -29,7 +29,7 @@ class LightningModel(pl.LightningModule):
         )
 
         # Initialize loss function with mel spectrogram loss
-        self.loss_fn = HybridLoss(
+        self.loss_fn = HybridLoss( use_mel_loss=config['loss']['use_mel_loss'],
             n_ffts=config['loss']['n_ffts'],
             sample_rate=config['model']['sample_rate'],
             n_mels=config['model']['n_mels'],  # Default to 80 if not specified

@@ -7,22 +7,24 @@ import torchaudio
 
 
 class HybridLoss(nn.Module):
-    def __init__(self, n_ffts, sample_rate=16000, n_mels=80, mel_weight=1.0):
+    def __init__(self, n_ffts, use_mel_loss=False, sample_rate=16000, n_mels=80, mel_weight=1.0):
         super().__init__()
         self.loss_mss_func = MSSLoss(n_ffts)
         self.f0_loss_func = F0L1Loss()
         self.fo_slow_loss_func = F0SlowLoss()
+        self.use_mel_loss = use_mel_loss
+
+        if self.use_mel_loss:
+            # Add mel spectrogram loss
+            self.mel_loss_func = MelSpectrogramLoss(
+                sample_rate=sample_rate,
+                n_fft=1024,
+                hop_length=256,
+                n_mels=n_mels
+            )
         
-        # Add mel spectrogram loss
-        self.mel_loss_func = MelSpectrogramLoss(
-            sample_rate=sample_rate,
-            n_fft=1024,
-            hop_length=256,
-            n_mels=n_mels
-        )
-        
-        # Ensure mel_weight is a float scalar, not a tensor
-        self.mel_weight = float(mel_weight)  # Convert to Python float
+            # Ensure mel_weight is a float scalar, not a tensor
+            self.mel_weight = float(mel_weight)  # Convert to Python float
 
     def forward(self, y_pred, y_true, f0_pred, f0_true, mel_input=None):
         # Get multi-scale spectrogram loss
@@ -31,37 +33,45 @@ class HybridLoss(nn.Module):
         # Get F0 loss
         loss_f0 = self.f0_loss_func(f0_pred, f0_true)
         
-        # Init default values for mel loss
-        loss_mel = torch.tensor(0.0, device=y_pred.device)
-        
-        # Calculate mel spectrogram loss only if mel_input is provided
-        if mel_input is not None:
-            try:
-                loss_mel = self.mel_loss_func(y_pred, mel_input)
-                
-                # Ensure loss_mel is a scalar
-                if loss_mel.numel() > 1:  # If it has more than one element
-                    loss_mel = loss_mel.mean()  # Convert to scalar by taking mean
-            except Exception as e:
-                print(f"Error in mel loss calculation: {e}")
-                # Keep default zero value
-                loss_mel = torch.tensor(0.0, device=y_pred.device)
+        if self.use_mel_loss:
+            # Init default values for mel loss
+            loss_mel = torch.tensor(0.0, device=y_pred.device)
+            
+            # Calculate mel spectrogram loss only if mel_input is provided
+            if mel_input is not None:
+                try:
+                    loss_mel = self.mel_loss_func(y_pred, mel_input)
+                    
+                    # Ensure loss_mel is a scalar
+                    if loss_mel.numel() > 1:  # If it has more than one element
+                        loss_mel = loss_mel.mean()  # Convert to scalar by taking mean
+                except Exception as e:
+                    print(f"Error in mel loss calculation: {e}")
+                    # Keep default zero value
+                    loss_mel = torch.tensor(0.0, device=y_pred.device)
         
         # Calculate the total loss
         loss = loss_mss + loss_f0
-        
+            
         # Only add mel loss if it's valid
         if mel_input is not None and torch.isfinite(loss_mel).all():
             # Use explicit scalar multiplication to avoid issues
             loss = loss + (loss_mel * self.mel_weight)
         
-        # Return dictionary of all losses for logging
-        return {
+        if self.use_mel_loss:
+            return {
             'loss_f0': loss_f0.detach(),
             'loss_mss': loss_mss.detach(),
             'loss_mel': loss_mel.detach(),
             'loss': loss
         }
+        else:
+            # Return dictionary of all losses for logging
+            return {
+                'loss_f0': loss_f0.detach(),
+                'loss_mss': loss_mss.detach(),
+                'loss': loss
+            }
 
 class SSSLoss(nn.Module):
     """

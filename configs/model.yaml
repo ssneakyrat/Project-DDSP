@@ -23,6 +23,7 @@ model:
 
 loss:
   n_ffts: [1024, 512, 256, 128]
+  use_mel_loss: false
   mel_weight: 0.5  # Weight for mel spectrogram loss
 
 training:
