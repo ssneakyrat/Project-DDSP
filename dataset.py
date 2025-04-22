@@ -191,6 +191,10 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
     """
     Process a batch of audio files on GPU for feature extraction.
     This runs in a single process to maximize GPU utilization.
+    
+    UPDATED: Now includes cross-aligned features:
+    - phone_seq_mel: phones aligned with mel frames
+    - f0_audio: f0 aligned with audio frames
     """
     results = []
     
@@ -251,7 +255,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             # Move mel to CPU and convert to numpy
             mel_np = mel_norm.squeeze(0).cpu().numpy().T
             
-            # Create phone sequence
+            # Create phone sequence aligned with audio samples
             phone_seq = np.zeros(context_window_samples)
             for p, start, end in zip(phone_indices, start_times, end_times):
                 phone_seq[start:end] = p
@@ -261,11 +265,33 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             f0_len = min(len(f0), target_f0_length)
             f0_padded[:f0_len] = f0[:f0_len]
             
+            # NEW: Create phone sequence aligned with mel frames (downsampling)
+            phone_seq_mel = np.zeros(target_f0_length)
+            for i in range(target_f0_length):
+                start_idx = i * hop_length
+                end_idx = min(start_idx + hop_length, context_window_samples)
+                if start_idx < context_window_samples:
+                    # Use majority vote to determine phone for this frame
+                    unique_phones, counts = np.unique(phone_seq[start_idx:end_idx], return_counts=True)
+                    if len(unique_phones) > 0:  # Make sure there's at least one phone
+                        phone_seq_mel[i] = unique_phones[np.argmax(counts)]
+            
+            # NEW: Create F0 aligned with audio frames (upsampling)
+            t_mel = np.arange(target_f0_length) * hop_length / SAMPLE_RATE  # Time in seconds for each mel frame
+            t_audio = np.arange(context_window_samples) / SAMPLE_RATE      # Time in seconds for each audio sample
+            if len(f0_padded) > 0:
+                # Use linear interpolation to upsample F0 to audio sample rate
+                f0_audio = np.interp(t_audio, t_mel, f0_padded)
+            else:
+                f0_audio = np.zeros(context_window_samples)
+            
             segments.append({
                 'audio': audio_data.audio,
-                'phone_seq': phone_seq,
-                'f0': f0_padded,
-                'mel': mel_np,
+                'phone_seq': phone_seq,           # Aligned with audio frames
+                'phone_seq_mel': phone_seq_mel,   # NEW: Aligned with mel frames
+                'f0': f0_padded,                  # Aligned with mel frames
+                'f0_audio': f0_audio,             # NEW: Aligned with audio frames
+                'mel': mel_np,                    # Aligned with mel frames
                 'singer_id': metadata.singer_idx,
                 'language_id': metadata.language_idx,
                 'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}"
@@ -295,7 +321,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     actual_f0_len = min(len(f0) - f0_start_idx, target_f0_length)
                     segment_f0[:actual_f0_len] = f0[f0_start_idx:f0_start_idx + actual_f0_len]
                 
-                # Create phone sequence for this segment
+                # Create phone sequence for this segment (aligned with audio frames)
                 phone_seq = np.zeros(context_window_samples)
                 for p, start, end in zip(phone_indices, start_times, end_times):
                     seg_start = max(0, start - i)
@@ -303,11 +329,33 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     if seg_end > seg_start and seg_start < context_window_samples:
                         phone_seq[seg_start:seg_end] = p
                 
+                # NEW: Create phone sequence aligned with mel frames (downsampling)
+                phone_seq_mel = np.zeros(target_f0_length)
+                for j in range(target_f0_length):
+                    start_idx = j * hop_length
+                    end_idx = min(start_idx + hop_length, context_window_samples)
+                    if start_idx < context_window_samples:
+                        # Use majority vote to determine phone for this frame
+                        unique_phones, counts = np.unique(phone_seq[start_idx:end_idx], return_counts=True)
+                        if len(unique_phones) > 0:  # Make sure there's at least one phone
+                            phone_seq_mel[j] = unique_phones[np.argmax(counts)]
+                
+                # NEW: Create F0 aligned with audio frames (upsampling)
+                t_mel = np.arange(target_f0_length) * hop_length / SAMPLE_RATE  # Time in seconds for each mel frame
+                t_audio = np.arange(context_window_samples) / SAMPLE_RATE      # Time in seconds for each audio sample
+                if len(segment_f0) > 0:
+                    # Use linear interpolation to upsample F0 to audio sample rate
+                    f0_audio = np.interp(t_audio, t_mel, segment_f0)
+                else:
+                    f0_audio = np.zeros(context_window_samples)
+                
                 segments.append({
                     'audio': segment_audio,
-                    'phone_seq': phone_seq,
-                    'f0': segment_f0,
-                    'mel': segment_mel_np,
+                    'phone_seq': phone_seq,           # Aligned with audio frames
+                    'phone_seq_mel': phone_seq_mel,   # NEW: Aligned with mel frames
+                    'f0': segment_f0,                 # Aligned with mel frames
+                    'f0_audio': f0_audio,             # NEW: Aligned with audio frames
+                    'mel': segment_mel_np,            # Aligned with mel frames
                     'singer_id': metadata.singer_idx,
                     'language_id': metadata.language_idx,
                     'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}_{i}"
@@ -713,23 +761,29 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         item = self.data[idx]
         
         audio = torch.FloatTensor(item['audio'])
-        phone_seq = torch.LongTensor(item['phone_seq'])
-        f0 = torch.FloatTensor(item['f0'])
+        phone_seq = torch.LongTensor(item['phone_seq'])                  # Aligned with audio
+        phone_seq_mel = torch.LongTensor(item['phone_seq_mel'])          # NEW: Aligned with mel frames
+        f0 = torch.FloatTensor(item['f0'])                               # Aligned with mel frames
+        f0_audio = torch.FloatTensor(item['f0_audio'])                   # NEW: Aligned with audio frames  
         mel = torch.FloatTensor(item['mel'])
         singer_id = torch.LongTensor([item['singer_id']])
         language_id = torch.LongTensor([item['language_id']])
         
         # Create one-hot encodings
         phone_one_hot = F.one_hot(phone_seq.long(), num_classes=len(self.phone_map)+1).float()
+        phone_mel_one_hot = F.one_hot(phone_seq_mel.long(), num_classes=len(self.phone_map)+1).float()  # NEW
         singer_one_hot = F.one_hot(singer_id.long(), num_classes=len(self.singer_map)).float().squeeze(0)
         language_one_hot = F.one_hot(language_id.long(), num_classes=len(self.language_map)).float().squeeze(0)
         
         return {
             'audio': audio,
-            'phone_seq': phone_seq,
-            'phone_one_hot': phone_one_hot,
-            'f0': f0,
-            'mel': mel,
+            'phone_seq': phone_seq,                    # Aligned with audio frames
+            'phone_seq_mel': phone_seq_mel,            # NEW: Aligned with mel frames
+            'phone_one_hot': phone_one_hot,            # Aligned with audio frames
+            'phone_mel_one_hot': phone_mel_one_hot,    # NEW: Aligned with mel frames
+            'f0': f0,                                  # Aligned with mel frames
+            'f0_audio': f0_audio,                      # NEW: Aligned with audio frames
+            'mel': mel,                                # Aligned with mel frames
             'singer_id': singer_id,
             'language_id': language_id,
             'singer_one_hot': singer_one_hot,
@@ -779,7 +833,6 @@ if __name__ == "__main__":
     loader, dataset = get_dataloader(
         batch_size=16, 
         num_workers=4,
-        dataset_workers=8,
         max_files=100  # Limit for testing
     )
     
