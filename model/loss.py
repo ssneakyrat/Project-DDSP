@@ -53,10 +53,11 @@ class HybridLoss(nn.Module):
         # Calculate the total loss
         loss = loss_mss + loss_f0
             
-        # Only add mel loss if it's valid
-        if mel_input is not None and torch.isfinite(loss_mel).all():
-            # Use explicit scalar multiplication to avoid issues
-            loss = loss + (loss_mel * self.mel_weight)
+        if self.use_mel_loss:
+            # Only add mel loss if it's valid
+            if mel_input is not None and torch.isfinite(loss_mel).all():
+                # Use explicit scalar multiplication to avoid issues
+                loss = loss + (loss_mel * self.mel_weight)
         
         if self.use_mel_loss:
             return {

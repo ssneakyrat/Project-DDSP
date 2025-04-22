@@ -68,7 +68,7 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    torch.set_float32_matmul_precision('medium')
+    #torch.set_float32_matmul_precision('medium')
 
     args = parse_args()
     

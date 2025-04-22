@@ -4,6 +4,7 @@ import torch.nn as nn
 from ddsp.melception import Melception
 from ddsp.mel2control import Mel2Control
 from ddsp.modules import HarmonicOscillator
+from ddsp.vocal_oscillator import VocalOscillator
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
 
 class Synth(nn.Module):
@@ -31,7 +32,7 @@ class Synth(nn.Module):
         self.mel2ctrl = Melception(n_mels, split_map)
 
         # Harmonic Synthsizer
-        self.harmonic_synthsizer = HarmonicOscillator(sampling_rate)
+        self.harmonic_synthsizer = VocalOscillator(sampling_rate)
 
     def forward(self, mel, initial_phase=None):
         '''
