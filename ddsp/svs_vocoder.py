@@ -101,13 +101,17 @@ class SVSVocoder(nn.Module):
         """
         Full SVS forward pass with linguistic inputs
         """
+
+        print( 'Start pseudo-mel representation' )
         # Generate pseudo-mel representation
         pseudo_mel = self.pseudo_mel_generator(
             phonemes, f0_in, singer_ids, language_ids)
         
+        print( 'Predict formant parameters' )
         # Predict formant parameters
         formant_params = self.formant_predictor(pseudo_mel)
         
+        print( 'control parameters from pseudo-mel' )
         # Generate control parameters from pseudo-mel
         ctrls = self.mel2ctrl(pseudo_mel)
         
@@ -132,9 +136,11 @@ class SVSVocoder(nn.Module):
         # Apply harmonic shaping
         harmonic = frequency_filter(harmonic, harmonic_magnitude)
         
+        print( 'Apply formant filtering to harmonic component' )
         # Apply formant filtering to harmonic component
         harmonic = self.formant_filter(harmonic, *formant_params)
         
+        print( 'Generate and shape noise component' )
         # Generate and shape noise component
         noise = torch.randn_like(harmonic) * 2 - 1
         noise = frequency_filter(noise, noise_magnitude)
@@ -142,6 +148,8 @@ class SVSVocoder(nn.Module):
         # Combine signals
         signal = harmonic + noise
         
+        print( 'end forward' )
+
         return signal, f0, phase, (harmonic, noise), formant_params
     
     def forward_mel(self, mel, initial_phase=None):
