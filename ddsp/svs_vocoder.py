@@ -67,7 +67,7 @@ class SVSVocoder(nn.Module):
         # Formant Filter
         self.formant_filter = FormantFilter(sampling_rate)
         
-    def forward(self, phonemes=None, durations=None, f0_in=None, singer_ids=None, language_ids=None, initial_phase=None, mel=None):
+    def forward(self, using_svs_model, phonemes=None, f0_in=None, singer_ids=None, language_ids=None, initial_phase=None, mel=None):
         """
         Forward pass of the SVS vocoder with formant filtering
         
@@ -92,12 +92,12 @@ class SVSVocoder(nn.Module):
             formant_params: Tuple of formant parameters
         """
         # Handling different input modes
-        if mel is not None:
-            # Compatibility mode: main.py with just mel input
-            return self.forward_mel(mel, initial_phase)
-        else:
+        if using_svs_model:
             # Full SVS mode with linguistic inputs
             return self.forward_svs(phonemes, mel, f0_in, singer_ids, language_ids, initial_phase)
+        else:
+            # Compatibility mode: main.py with just mel input
+            return self.forward_mel(mel, initial_phase)
             
     def forward_svs(self, phonemes, mel, f0_in, singer_ids, language_ids, initial_phase=None):
         """

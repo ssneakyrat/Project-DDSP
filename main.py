@@ -231,7 +231,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
     Dataset wrapper for Singing Voice Synthesis
     
     Takes the existing dataset and transforms it to the format required by the SVS vocoder
-    Ensures phoneme sequences and durations are correctly aligned with mel frames
+    Ensures phoneme sequences and F0 are properly aligned
     """
     def __init__(self, dataset):
         """
@@ -270,105 +270,59 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         else:
             language_id = torch.tensor(0, dtype=torch.long)
         
-        # Extract phoneme sequence - now this is already in mel frames in dataset.py
+        # Get the frame-aligned phone_seq and use it directly as phonemes
+        # This is the key fix - we're using the original frame-aligned sequence
         if 'phone_seq' in item:
-            phone_seq = item['phone_seq']
-            # Ensure phone_seq is a tensor of the correct type
-            if not isinstance(phone_seq, torch.Tensor):
-                phone_seq = torch.tensor(phone_seq, dtype=torch.long)
-            elif phone_seq.dtype != torch.long:
-                phone_seq = phone_seq.long()
+            phonemes = item['phone_seq']
+            # Ensure phonemes is a tensor of the correct type
+            if not isinstance(phonemes, torch.Tensor):
+                phonemes = torch.tensor(phonemes, dtype=torch.long)
+            elif phonemes.dtype != torch.long:
+                phonemes = phonemes.long()
         else:
             # If no phone_seq, create dummy one matching mel length
             if 'mel' in item:
                 mel_len = item['mel'].shape[0]
-                phone_seq = torch.zeros(mel_len, dtype=torch.long)
+                phonemes = torch.zeros(mel_len, dtype=torch.long)
             else:
-                phone_seq = torch.zeros(100, dtype=torch.long)
+                phonemes = torch.zeros(100, dtype=torch.long)
         
         # Get mel data
         mel = item['mel']
         if not isinstance(mel, torch.Tensor):
             mel = torch.tensor(mel, dtype=torch.float)
         
-        # Get F0 data and ensure it's a float tensor aligned with mel frames
+        # Get F0 data and ensure it's a float tensor
         if 'f0' in item:
             f0 = item['f0']
             if not isinstance(f0, torch.Tensor):
                 f0 = torch.tensor(f0, dtype=torch.float)
-            
-            # Ensure f0 length matches mel frames
-            if len(f0) != len(mel):
-                # Resize f0 to match mel length
-                if len(f0) > len(mel):
-                    f0 = f0[:len(mel)]
-                else:
-                    # Pad f0 if shorter
-                    pad_f0 = torch.zeros(len(mel), dtype=torch.float)
-                    pad_f0[:len(f0)] = f0
-                    f0 = pad_f0
         else:
             # Create dummy F0 matching mel length
             f0 = torch.ones(len(mel), dtype=torch.float) * 220.0
         
-        # Calculate durations by counting consecutive same phonemes
-        # This approach assumes phone_seq is already in frame-level
-        if phone_seq.dim() == 1:
-            # Count duration of each unique phoneme
-            durations = []
-            current_phone = None
-            current_count = 0
-            
-            for phone in phone_seq:
-                phone_item = phone.item()
-                if current_phone is None:
-                    current_phone = phone_item
-                    current_count = 1
-                elif phone_item == current_phone:
-                    current_count += 1
-                else:
-                    durations.append(current_count)
-                    current_phone = phone_item
-                    current_count = 1
-            
-            # Add the last phoneme duration
-            if current_count > 0:
-                durations.append(current_count)
-            
-            # Convert to tensor
-            if durations:
-                durations = torch.tensor(durations, dtype=torch.float)
-            else:
-                # If no durations found, create dummy
-                durations = torch.ones(1, dtype=torch.float)
-            
-            # Create phoneme sequence with one entry per unique phoneme
-            unique_phones = []
-            current_phone = None
-            
-            for phone in phone_seq:
-                phone_item = phone.item()
-                if current_phone is None or phone_item != current_phone:
-                    current_phone = phone_item
-                    unique_phones.append(phone_item)
-            
-            phonemes = torch.tensor(unique_phones, dtype=torch.long)
-        else:
-            # Fallback for unexpected phone_seq format
-            phonemes = torch.zeros(1, dtype=torch.long)
-            durations = torch.ones(1, dtype=torch.float) * len(mel)
+        # Calculate durations - instead of condensing phone_seq, we can create a dummy durations tensor
+        # This approach maintains frame alignment while still providing durations
+        durations = torch.ones(phonemes.size(0), dtype=torch.float)
         
         # Ensure audio is a float tensor
         audio = item['audio']
         if not isinstance(audio, torch.Tensor):
             audio = torch.tensor(audio, dtype=torch.float)
         
+        # Ensure all sequences have compatible lengths
+        min_length = min(len(phonemes), len(f0), len(mel))
+        phonemes = phonemes[:min_length]
+        f0 = f0[:min_length]
+        mel = mel[:min_length]
+        durations = durations[:min_length]
+        
         # Construct the output with all required fields for SVS
         return {
             'name': filename,
             'audio': audio,
-            'phonemes': phonemes,  # Now contains unique phonemes
-            'durations': durations,  # Frame-level durations for each unique phoneme
+            'phonemes': phonemes,  # Now contains frame-level phoneme sequence
+            'durations': durations,  # Dummy durations (all ones) for compatibility
             'f0': f0,  # Frame-level F0
             'singer_id': singer_id,
             'language_id': language_id,

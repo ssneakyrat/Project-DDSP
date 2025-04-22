@@ -68,37 +68,20 @@ class PseudoMelGenerator(nn.Module):
         # Get embeddings
         phone_emb = self.phoneme_embedding(phonemes)
         singer_emb = self.singer_embedding(singer_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
-        lang_emb = self.language_embedding(language_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
-        print("Phoneme embedding shape:", phone_emb.size())
-        print(f0.size(), phonemes.size())
-        # Process F0 - downsample to match phoneme length if needed
-        if f0.size(1) != phonemes.size(1):
-            f0_resampled = F.interpolate(
-                f0.unsqueeze(1),  # Add channel dim [B, 1, T_frames]
-                size=phonemes.size(1),  # Target length = phoneme length
-                mode='linear',
-                align_corners=False
-            ).squeeze(1)  # Remove channel dim [B, T_phones]
-        else:
-            f0_resampled = f0
-            
-        # Process durations - ensure matching phoneme length
-        if durations.size(1) != phonemes.size(1):
-            durations_resampled = F.interpolate(
-                durations.unsqueeze(1),
-                size=phonemes.size(1),
-                mode='nearest',
-                align_corners=False
-            ).squeeze(1)
-        else:
-            durations_resampled = durations
-            
+        lang_emb = self.language_embedding(language_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)        
+
         # Process continuous features
-        f0_emb = self.f0_projection(f0_resampled.unsqueeze(-1))
-        dur_emb = self.duration_projection(durations_resampled.unsqueeze(-1))
+        f0_emb = self.f0_projection(f0.unsqueeze(-1))
+        dur_emb = self.duration_projection(durations.unsqueeze(-1))
         
+        print("Phoneme embedding shape:", phone_emb.size())
+        print("f0 embedding shape:", f0_emb.size())
+        print('mel duration:', dur_emb.size())
+        print("Singer embedding shape:", singer_emb.size())
+        print("Language embedding shape:", lang_emb.size())
+
         # Combine all embeddings
-        combined = torch.cat([phone_emb, singer_emb, lang_emb, f0_emb, dur_emb], dim=-1)
+        combined = torch.cat([phone_emb, singer_emb, lang_emb, f0_emb], dim=-1)
         fused = self.fusion_layer(combined)
         
         # Temporal modeling with PCmer

@@ -521,34 +521,16 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
             
             # forward
             if using_svs_model:
-                # For SVSVocoder
-                # Check if we have phonemes and other required fields
-                if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
-                    # Use the properly typed tensors
-                    singer_ids = data['singer_id']  # Already long tensor
-                    language_ids = data['language_id']  # Already long tensor
-                    phonemes = data['phonemes']  # Already long tensor
-                    durations = data['durations']
-                    f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    
-                    signal, f0_pred, _, _, _ = model(
-                        phonemes, durations, f0, 
-                        singer_ids, language_ids
-                    )
-                else:
-                    # Fallback to mel input with dummy parameters
-                    batch_size = data['mel'].size(0)
-                    seq_len = data['mel'].size(1)
-                    dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(args.device)
-                    dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
-                    dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
-                    dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
-                    
-                    signal, f0_pred, _, _, _ = model(
-                        dummy_phonemes, dummy_durations, dummy_f0, 
-                        dummy_singer_ids, dummy_language_ids
-                    )
+                singer_ids = data['singer_id']  # Already long tensor
+                language_ids = data['language_id']  # Already long tensor
+                phonemes = data['phonemes']  # Already long tensor
+                durations = data['durations']
+                f0 = data['f0'] #data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+                
+                signal, f0_pred, _, _, _ = model(using_svs_model,
+                    phonemes, f0, 
+                    singer_ids, language_ids, mel=data['mel']
+                )
             else:
                 # For standard vocoders
                 signal, f0_pred, _, _ = model(data['mel'])
