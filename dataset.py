@@ -154,9 +154,18 @@ def stage1_process_file(file_metadata, phone_map, sample_rate):
         if len(start_times) > 0:
             max_time = max(end_times)
             
-            # Scale the timestamps to match the audio length
-            start_times = [int(t * audio_length / max_time) for t in start_times]
-            end_times = [int(t * audio_length / max_time) for t in end_times]
+            # Scale the timestamps to match the audio length first
+            scaled_start_times = [int(t * audio_length / max_time) for t in start_times]
+            scaled_end_times = [int(t * audio_length / max_time) for t in end_times]
+            
+            # Convert audio sample indices to mel frame indices
+            start_times = [int(t // HOP_LENGTH) for t in scaled_start_times]
+            end_times = [int(t // HOP_LENGTH) for t in scaled_end_times]
+            
+            # Ensure no empty frames (minimum 1 frame per phoneme)
+            for i in range(len(start_times)):
+                if start_times[i] == end_times[i]:
+                    end_times[i] = start_times[i] + 1
         
         # Convert phones to indices
         phone_indices = [phone_map.get(p, 0) for p in phones]
@@ -252,9 +261,13 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             mel_np = mel_norm.squeeze(0).cpu().numpy().T
             
             # Create phone sequence
-            phone_seq = np.zeros(context_window_samples)
+            mel_frames_length = context_window_samples // hop_length + 1
+            phone_seq = np.zeros(mel_frames_length)
             for p, start, end in zip(phone_indices, start_times, end_times):
-                phone_seq[start:end] = p
+                # Clamp indices to valid range
+                start_idx = max(0, min(start, mel_frames_length-1))
+                end_idx = max(start_idx+1, min(end, mel_frames_length))
+                phone_seq[start_idx:end_idx] = p
             
             # Ensure consistent F0 length
             f0_padded = np.zeros(target_f0_length)

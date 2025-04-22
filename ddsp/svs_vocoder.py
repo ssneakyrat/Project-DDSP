@@ -97,18 +97,18 @@ class SVSVocoder(nn.Module):
             return self.forward_mel(mel, initial_phase)
         else:
             # Full SVS mode with linguistic inputs
-            return self.forward_svs(phonemes, durations, f0_in, singer_ids, language_ids, initial_phase)
+            return self.forward_svs(phonemes, mel, f0_in, singer_ids, language_ids, initial_phase)
             
-    def forward_svs(self, phonemes, durations, f0_in, singer_ids, language_ids, initial_phase=None):
+    def forward_svs(self, phonemes, mel, f0_in, singer_ids, language_ids, initial_phase=None):
         """
         Full SVS forward pass with linguistic inputs
         """
         # Generate pseudo-mel representation
         pseudo_mel, hidden_states = self.pseudo_mel_generator(
-            phonemes, durations, f0_in, singer_ids, language_ids)
+            phonemes, mel, f0_in, singer_ids, language_ids)
         
         # Predict formant parameters
-        formant_params = self.formant_predictor(pseudo_mel, hidden_states, phonemes)
+        formant_params = self.formant_predictor(pseudo_mel, hidden_states, mel)
         
         # Generate control parameters from pseudo-mel
         ctrls = self.mel2ctrl(pseudo_mel)

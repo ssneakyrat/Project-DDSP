@@ -133,6 +133,7 @@ def custom_collate(batch):
 def svs_collate_fn(batch):
     """
     Custom collate function for SVS dataset that handles variable-length tensors.
+    Keeps phoneme and mel frames aligned without unnecessary padding/truncation.
     """
     # Get batch size
     batch_size = len(batch)
@@ -148,9 +149,12 @@ def svs_collate_fn(batch):
     max_f0_len = max(item['f0'].size(0) for item in batch)
     max_duration_len = max(item['durations'].size(0) for item in batch)
     
+    # IMPORTANT: Make sure max_f0_len matches the expected mel frames length
+    # This ensures all conditioning parameters are aligned to mel frames
+    
     # Initialize tensors with proper shapes and types
     collated['audio'] = torch.zeros(batch_size, max_audio_len)
-    collated['phonemes'] = torch.zeros(batch_size, max_phoneme_len, dtype=torch.long)  # Ensure long type for phonemes
+    collated['phonemes'] = torch.zeros(batch_size, max_phoneme_len, dtype=torch.long)
     collated['f0'] = torch.zeros(batch_size, max_f0_len)
     collated['durations'] = torch.zeros(batch_size, max_duration_len)
     
@@ -163,6 +167,12 @@ def svs_collate_fn(batch):
         mel_dim = batch[0]['mel'].size(-1)
         max_mel_len = max(item['mel'].size(0) for item in batch)
         collated['mel'] = torch.zeros(batch_size, max_mel_len, mel_dim)
+        
+        # Ensure max_f0_len matches max_mel_len for proper alignment
+        if max_f0_len != max_mel_len:
+            print(f"Warning: max_f0_len ({max_f0_len}) does not match max_mel_len ({max_mel_len})")
+            # Recreate f0 tensor with proper length
+            collated['f0'] = torch.zeros(batch_size, max_mel_len)
     
     # Fill the tensors with actual data
     for i, item in enumerate(batch):
@@ -174,17 +184,24 @@ def svs_collate_fn(batch):
         
         collated['audio'][i, :audio_len] = item['audio']
         collated['phonemes'][i, :phoneme_len] = item['phonemes']
-        collated['f0'][i, :f0_len] = item['f0']
+        
+        # Ensure f0 is padded to match mel length if mel is present
+        if 'mel' in item:
+            mel_len = item['mel'].size(0)
+            # Use the smaller of f0_len and mel_len to avoid index errors
+            valid_f0_len = min(f0_len, mel_len)
+            max_target_len = max_mel_len
+            
+            collated['f0'][i, :valid_f0_len] = item['f0'][:valid_f0_len]
+            collated['mel'][i, :mel_len] = item['mel']
+        else:
+            collated['f0'][i, :f0_len] = item['f0']
+            
         collated['durations'][i, :duration_len] = item['durations']
         
         # Handle scalar values - ensure correct types
         collated['singer_id'][i] = item['singer_id'].long() if isinstance(item['singer_id'], torch.Tensor) else torch.tensor(item['singer_id'], dtype=torch.long)
         collated['language_id'][i] = item['language_id'].long() if isinstance(item['language_id'], torch.Tensor) else torch.tensor(item['language_id'], dtype=torch.long)
-        
-        # Handle mel spectrograms if present
-        if 'mel' in item:
-            mel_len = item['mel'].size(0)
-            collated['mel'][i, :mel_len] = item['mel']
     
     return collated
 
@@ -214,6 +231,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
     Dataset wrapper for Singing Voice Synthesis
     
     Takes the existing dataset and transforms it to the format required by the SVS vocoder
+    Ensures phoneme sequences and durations are correctly aligned with mel frames
     """
     def __init__(self, dataset):
         """
@@ -223,6 +241,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
             dataset: The base dataset containing audio, phonemes, F0, singer IDs, etc.
         """
         self.dataset = dataset
+        self.hop_length = 240  # Same as in dataset.py
     
     def __len__(self):
         return len(self.dataset)
@@ -231,7 +250,6 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         item = self.dataset[idx]
         
         # Extract and ensure consistent format for all required fields
-        # Get the filename or use a default one
         filename = item.get('filename', f"sample_{idx}")
         
         # Get singer_id and ensure it's a tensor of the correct type (long)
@@ -252,7 +270,7 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
         else:
             language_id = torch.tensor(0, dtype=torch.long)
         
-        # Extract phoneme sequence and ensure it's a long tensor
+        # Extract phoneme sequence - now this is already in mel frames in dataset.py
         if 'phone_seq' in item:
             phone_seq = item['phone_seq']
             # Ensure phone_seq is a tensor of the correct type
@@ -261,46 +279,100 @@ class SVSDatasetWrapper(torch.utils.data.Dataset):
             elif phone_seq.dtype != torch.long:
                 phone_seq = phone_seq.long()
         else:
-            # Create dummy phoneme data if not available
-            phone_seq = torch.zeros(100, dtype=torch.long)
+            # If no phone_seq, create dummy one matching mel length
+            if 'mel' in item:
+                mel_len = item['mel'].shape[0]
+                phone_seq = torch.zeros(mel_len, dtype=torch.long)
+            else:
+                phone_seq = torch.zeros(100, dtype=torch.long)
         
-        # Calculate durations from phone_seq
-        if isinstance(phone_seq, torch.Tensor) and phone_seq.dim() == 1:
-            # Simple approach: create constant duration for each phoneme
-            durations = torch.ones_like(phone_seq, dtype=torch.float)
-        else:
-            # Default durations if we can't determine from phone_seq
-            durations = torch.ones(100, dtype=torch.float)
+        # Get mel data
+        mel = item['mel']
+        if not isinstance(mel, torch.Tensor):
+            mel = torch.tensor(mel, dtype=torch.float)
         
-        # Get F0 data and ensure it's a float tensor
+        # Get F0 data and ensure it's a float tensor aligned with mel frames
         if 'f0' in item:
             f0 = item['f0']
             if not isinstance(f0, torch.Tensor):
                 f0 = torch.tensor(f0, dtype=torch.float)
+            
+            # Ensure f0 length matches mel frames
+            if len(f0) != len(mel):
+                # Resize f0 to match mel length
+                if len(f0) > len(mel):
+                    f0 = f0[:len(mel)]
+                else:
+                    # Pad f0 if shorter
+                    pad_f0 = torch.zeros(len(mel), dtype=torch.float)
+                    pad_f0[:len(f0)] = f0
+                    f0 = pad_f0
         else:
-            # Create dummy F0 data if not available
-            f0 = torch.ones(100, dtype=torch.float) * 220.0
+            # Create dummy F0 matching mel length
+            f0 = torch.ones(len(mel), dtype=torch.float) * 220.0
+        
+        # Calculate durations by counting consecutive same phonemes
+        # This approach assumes phone_seq is already in frame-level
+        if phone_seq.dim() == 1:
+            # Count duration of each unique phoneme
+            durations = []
+            current_phone = None
+            current_count = 0
+            
+            for phone in phone_seq:
+                phone_item = phone.item()
+                if current_phone is None:
+                    current_phone = phone_item
+                    current_count = 1
+                elif phone_item == current_phone:
+                    current_count += 1
+                else:
+                    durations.append(current_count)
+                    current_phone = phone_item
+                    current_count = 1
+            
+            # Add the last phoneme duration
+            if current_count > 0:
+                durations.append(current_count)
+            
+            # Convert to tensor
+            if durations:
+                durations = torch.tensor(durations, dtype=torch.float)
+            else:
+                # If no durations found, create dummy
+                durations = torch.ones(1, dtype=torch.float)
+            
+            # Create phoneme sequence with one entry per unique phoneme
+            unique_phones = []
+            current_phone = None
+            
+            for phone in phone_seq:
+                phone_item = phone.item()
+                if current_phone is None or phone_item != current_phone:
+                    current_phone = phone_item
+                    unique_phones.append(phone_item)
+            
+            phonemes = torch.tensor(unique_phones, dtype=torch.long)
+        else:
+            # Fallback for unexpected phone_seq format
+            phonemes = torch.zeros(1, dtype=torch.long)
+            durations = torch.ones(1, dtype=torch.float) * len(mel)
         
         # Ensure audio is a float tensor
         audio = item['audio']
         if not isinstance(audio, torch.Tensor):
             audio = torch.tensor(audio, dtype=torch.float)
-            
-        # Ensure mel is a float tensor
-        mel = item['mel']
-        if not isinstance(mel, torch.Tensor):
-            mel = torch.tensor(mel, dtype=torch.float)
         
         # Construct the output with all required fields for SVS
         return {
             'name': filename,
             'audio': audio,
-            'phonemes': phone_seq,
-            'durations': durations,
-            'f0': f0,
+            'phonemes': phonemes,  # Now contains unique phonemes
+            'durations': durations,  # Frame-level durations for each unique phoneme
+            'f0': f0,  # Frame-level F0
             'singer_id': singer_id,
             'language_id': language_id,
-            'mel': mel
+            'mel': mel  # Frame-level mel spectrogram
         }
 
 def get_data_loaders(args, is_svs_model=False, whole_audio=False):

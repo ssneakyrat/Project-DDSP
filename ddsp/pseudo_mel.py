@@ -69,7 +69,8 @@ class PseudoMelGenerator(nn.Module):
         phone_emb = self.phoneme_embedding(phonemes)
         singer_emb = self.singer_embedding(singer_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
         lang_emb = self.language_embedding(language_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)
-        
+        print("Phoneme embedding shape:", phone_emb.size())
+        print(f0.size(), phonemes.size())
         # Process F0 - downsample to match phoneme length if needed
         if f0.size(1) != phonemes.size(1):
             f0_resampled = F.interpolate(
