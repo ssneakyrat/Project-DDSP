@@ -57,17 +57,8 @@ class PseudoMelGenerator(nn.Module):
         lang_emb = self.language_embedding(language_ids).unsqueeze(1).expand(-1, phonemes.size(1), -1)        
 
         # Process continuous features
+        #f0_emb = self.f0_projection(f0.unsqueeze(-1))
         f0_emb = self.f0_projection(f0.unsqueeze(-1))
-        
-        print("Phoneme shape:", phonemes.size())
-        print("f0 shape:", f0.size())
-        print("Singer shape:", singer_ids.size())
-        print("Language shape:", language_ids.size())
-
-        print("Phoneme embedding shape:", phone_emb.size())
-        print("f0 embedding shape:", f0_emb.size())
-        print("Singer embedding shape:", singer_emb.size())
-        print("Language embedding shape:", lang_emb.size())
 
         # Stack all embeddings as channels for the fusion layer
         embeddings = torch.stack([phone_emb, f0_emb, singer_emb, lang_emb], dim=1)  # [16, 4, 201, 80]
@@ -75,8 +66,6 @@ class PseudoMelGenerator(nn.Module):
         # Apply fusion layer
         fused = self.fusion_layer(embeddings)  # [16, 1, 201, 80]
         pseudo_mel = fused.squeeze(1)  # [16, 201, 80]
-        
-        print("pseudo_mel fused shape:", pseudo_mel.size())
 
         return pseudo_mel
 

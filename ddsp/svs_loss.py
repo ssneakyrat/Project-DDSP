@@ -22,6 +22,11 @@ class MelSpectrogramLoss(nn.Module):
         )
         
     def forward(self, y_pred, y_true):
+        # Ensure both inputs have the same length
+        min_length = min(y_pred.shape[-1], y_true.shape[-1])
+        y_pred = y_pred[..., :min_length]
+        y_true = y_true[..., :min_length]
+        
         # Calculate power mel spectrograms
         if len(y_pred.shape) == 3:
             y_pred = y_pred.squeeze(1)
@@ -49,7 +54,7 @@ class SVSHybridLoss(nn.Module):
     def __init__(self, n_ffts, sample_rate):
         super().__init__()
         self.loss_mss_func = MSSLoss(n_ffts)
-        self.f0_loss_func = F0L1Loss()
+        #self.f0_loss_func = F0L1Loss()
         self.mel_loss_func = MelSpectrogramLoss(sample_rate)
         
     def forward(self, y_pred, y_true, f0_pred, f0_true):
@@ -68,12 +73,12 @@ class SVSHybridLoss(nn.Module):
         """
         # Original losses
         loss_mss = self.loss_mss_func(y_pred, y_true)
-        loss_f0 = self.f0_loss_func(f0_pred, f0_true)
+        #loss_f0 = self.f0_loss_func(f0_pred, f0_true)
         
         # New mel-spectrogram loss
         loss_mel = self.mel_loss_func(y_pred, y_true)
         
         # Combined loss
-        loss = loss_mss + loss_f0 + loss_mel
+        loss = loss_mss + loss_mel
         
-        return loss, (loss_mss, loss_f0, loss_mel)
+        return loss, (loss_mss, loss_mel)

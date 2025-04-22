@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 import soundfile as sf
 import librosa
-
+import torch.nn.functional as F
 import torch
 
 from logger.saver import Saver
@@ -364,39 +364,20 @@ def test(args, model, loss_func, loader_test, path_gendir='gen', is_part=False):
 
             # forward
             st_time = time.time()
-            
-            if is_svs_model(model):
-                # For SVSVocoder
-                # Check if we have phonemes and other required fields
-                if 'phonemes' in data and 'durations' in data and 'singer_id' in data and 'language_id' in data:
-                    singer_ids = data['singer_id']
-                    language_ids = data['language_id']
-                    phonemes = data['phonemes']
-                    durations = data['durations']
-                    f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    
-                    signal, f0_pred, _, (s_h, s_n), _ = model(
-                        phonemes, durations, f0, 
-                        singer_ids, language_ids
-                    )
-                else:
-                    # Fallback to mel input with dummy parameters
-                    batch_size = data['mel'].size(0)
-                    seq_len = data['mel'].size(1)
-                    dummy_phonemes = torch.zeros(batch_size, seq_len, dtype=torch.long).to(args.device)
-                    dummy_durations = torch.ones(batch_size, seq_len).to(args.device)
-                    dummy_f0 = data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
-                    dummy_singer_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
-                    dummy_language_ids = torch.zeros(batch_size, dtype=torch.long).to(args.device)
-                    
-                    signal, f0_pred, _, (s_h, s_n), _ = model(
-                        dummy_phonemes, dummy_durations, dummy_f0, 
-                        dummy_singer_ids, dummy_language_ids
-                    )
-            else:
-                # For standard vocoders that just use mel input
-                signal, f0_pred, _, (s_h, s_n) = model(data['mel'])
+                        
+            # For standard vocoders that just use mel input
+            #signal, f0_pred, _, (s_h, s_n) = model(data['mel'])
                 
+            singer_ids = data['singer_id']  # Already long tensor
+            language_ids = data['language_id']  # Already long tensor
+            phonemes = data['phonemes']  # Already long tensor
+            durations = data['durations']
+            f0 = data['f0'] #data['f0'].unsqueeze(-1) if len(data['f0'].shape) == 2 else data['f0']
+            
+            signal, f0_pred, _, _, _ = model(True,
+                phonemes, f0, 
+                singer_ids, language_ids
+            )
             ed_time = time.time()
 
             # crop
@@ -534,11 +515,11 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
             else:
                 # For standard vocoders
                 signal, f0_pred, _, _ = model(data['mel'])
-
-            # loss
-            loss, (loss_mss, loss_f0) = loss_func(
-                signal, data['audio'], f0_pred, data['f0'])
             
+            # loss
+            loss, (loss_mss, loss_mel ) = loss_func(
+                signal, data['audio'], f0_pred, data['f0'])
+
             # handle nan loss
             if torch.isnan(loss):
                 raise ValueError(' [x] nan loss ')
@@ -565,9 +546,8 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
                     )
                 )
                 saver.log_info(
-                    ' > mss loss: {:.6f}, f0: {:.6f}'.format(
+                    ' > mss loss: {:.6f}'.format(
                        loss_mss.item(),
-                       loss_f0.item(),
                     )
                 )
 
@@ -581,8 +561,9 @@ def train(args, model, loss_func, loader_train, loader_test, initial_global_step
                 saver.log_value({
                     'train loss': loss.item(), 
                     'train loss mss': loss_mss.item(),
-                    'train loss f0': loss_f0.item(),
                 })
+
+                print('loss_mel:', loss_mel.item())
         
         # End of epoch processing
         avg_epoch_loss = epoch_loss / num_batches

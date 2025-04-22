@@ -6,7 +6,7 @@ import numpy as np
 
 from ddsp.formant_filter import FormantFilter
 from ddsp.formant_harmonic_oscillator import FormantHarmonicOscillator
-from ddsp.core import scale_function, upsample, frequency_filter
+from ddsp.core import scale_function, upsample, frequency_filter, unit_to_hz2
 from ddsp.mel2control import Mel2Control
 
 class SVSVocoder(nn.Module):
@@ -98,22 +98,25 @@ class SVSVocoder(nn.Module):
         """
         Full SVS forward pass with linguistic inputs
         """
-
-        print( 'Start pseudo-mel representation' )
+        
         # Generate pseudo-mel representation
         pseudo_mel = self.pseudo_mel_generator(
             phonemes, f0_in, singer_ids, language_ids)
         
-        print( 'Predict formant parameters' )
         # Predict formant parameters
         formant_params = self.formant_predictor(pseudo_mel)
         
-        print( 'control parameters from pseudo-mel' )
         # Generate control parameters from pseudo-mel
         ctrls = self.mel2ctrl(pseudo_mel)
         
+        # unpack
+        f0_unit = ctrls['f0']# units
+        f0_unit = torch.sigmoid(f0_unit)
+        f0 = unit_to_hz2(f0_unit, hz_min = 80.0, hz_max=1000.0)
+        f0[f0<80] = 0
+
         # Extract and process control parameters
-        f0 = ctrls['f0']
+        #f0 = ctrls['f0']
         A = scale_function(ctrls['A'])
         amplitudes = scale_function(ctrls['amplitudes'])
         harmonic_magnitude = scale_function(ctrls['harmonic_magnitude'])
@@ -140,15 +143,12 @@ class SVSVocoder(nn.Module):
         # Apply harmonic shaping
         harmonic = frequency_filter(harmonic, harmonic_magnitude)
         
-        print( 'Generate and shape noise component' )
         # Generate and shape noise component
         noise = torch.randn_like(harmonic) * 2 - 1
         noise = frequency_filter(noise, noise_magnitude)
         
         # Combine signals
         signal = harmonic + noise
-        
-        print( 'end forward' )
 
         return signal, f0, phase, (harmonic, noise), formant_params
     

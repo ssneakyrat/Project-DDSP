@@ -346,7 +346,7 @@ def get_data_loaders(args, is_svs_model=False, whole_audio=False):
         n_mels=80,
         hop_length=args.data.block_size,
         win_length=1024,
-        max_files=None
+        max_files=100
     )
     
     # Create validation dataset
@@ -543,8 +543,8 @@ if __name__ == '__main__':
     using_svs_model = is_svs_model(model)
     
     # Set default loss function if not already set
-    if 'loss_func' not in locals():
-        loss_func = HybridLoss(args.loss.n_ffts)
+    #if 'loss_func' not in locals():
+    #    loss_func = HybridLoss(args.loss.n_ffts)
     
     # load parameters from checkpoint if available
     initial_global_step = -1
