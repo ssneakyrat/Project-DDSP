@@ -4,7 +4,6 @@ import torch.nn as nn
 # Import the optimized modules
 from ddsp.modules import HarmonicOscillator
 from model.sing_vocoder import SingVocoder
-#from ddsp.standalone_vocoder import AbstractVocalSynthesizer, VocalSynthConfig, PrecisionMode, FormantQuality, BreathQuality
 
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
 
@@ -121,23 +120,7 @@ class Synth(nn.Module):
         harmonic = frequency_filter(
                         harmonic,
                         src_param)
-        '''
-        # Synthesize harmonic component with vocal parameters
-        harmonic, final_phase = self.vocal_synthesizer(
-            pitch, 
-            amplitudes, 
-            initial_phase=initial_phase
-            #vibrato_rate=expression_params['vibrato_rate'],
-            #vibrato_depth=expression_params['vibrato_depth'],
-            #formant_freqs=expression_params['formant_freqs'],
-            #formant_bandwidths=expression_params['formant_bandwidths'],
-            #formant_gains=expression_params['formant_gains'],
-            #glottal_open_quotient=expression_params['glottal_open_quotient'],
-            #phase_coherence=expression_params['phase_coherence'],
-            #breathiness=expression_params['breathiness'],
-            #breath_spectral_shape=expression_params['breath_spectral_shape']
-        )
-        '''
+
         # Apply spectral filtering to harmonic component
         harmonic = frequency_filter(
             harmonic,
