@@ -4,7 +4,9 @@ import torch.nn as nn
 # Import the optimized modules
 from ddsp.melception import Melception
 from ddsp.expression_predictor import ExpressionPredictor
-from ddsp.vocal_oscillator import VocalOscillator
+#from ddsp.vocal_oscillator import VocalOscillator
+from ddsp.standalone_vocoder import AbstractVocalSynthesizer, VocalSynthConfig, PrecisionMode, FormantQuality, BreathQuality
+
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
 
 class Synth(nn.Module):
@@ -53,7 +55,19 @@ class Synth(nn.Module):
         )
 
         # Advanced vocal synthesizer
-        self.vocal_synthsizer = VocalOscillator(sampling_rate)
+        #self.vocal_synthsizer = VocalOscillator(sampling_rate)
+        # Advanced vocal synthesizer (using the new standalone implementation)
+        vocoder_config = VocalSynthConfig(
+            sampling_rate=sampling_rate,
+            n_formants=n_formants,
+            precision=PrecisionMode.FLOAT32,
+            formant_quality=FormantQuality.NORMAL,
+            breath_quality=BreathQuality.NORMAL,
+            use_gpu=True,
+            fallback_to_cpu=False  # Allow fallback to CPU if GPU not available
+        )
+        
+        self.vocal_synthesizer = AbstractVocalSynthesizer.create(config=vocoder_config)
 
     def forward(self, mel, initial_phase=None):
         '''
@@ -123,7 +137,7 @@ class Synth(nn.Module):
         )
         '''
         # Synthesize harmonic component with advanced vocal parameters
-        harmonic, final_phase = self.vocal_synthsizer(
+        harmonic, final_phase = self.vocal_synthesizer(
             pitch, 
             amplitudes, 
             initial_phase=initial_phase,
