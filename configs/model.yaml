@@ -1,9 +1,9 @@
 dataset:
-  batch_size: 16
-  num_workers: 4
+  batch_size: 8
+  num_workers: 8
   pin_memory: false
   persistent_workers: true
-  train_files: 100 #null  # Set to a number for development
+  train_files: null  # Set to a number for development
   val_files: 10 #null  # Set to a number for development
 
 model:
@@ -27,7 +27,7 @@ model:
 loss:
   n_ffts: [1024, 512, 256, 128]
   use_mel_loss: true
-  mel_weight: 0.5  # Weight for mel spectrogram loss
+  mel_weight: 2.0  # Weight for mel spectrogram loss
   use_mss_loss: true
   use_f0_loss: true  
   use_amplitude_loss: true

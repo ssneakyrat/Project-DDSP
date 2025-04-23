@@ -276,8 +276,12 @@ def main():
         num_sanity_val_steps=0
     )
     
-    # Train model
-    trainer.fit(model, train_loader, val_loader)
+    # Train model - now with checkpoint support
+    if args.checkpoint:
+        print(f"Resuming training from checkpoint: {args.checkpoint}")
+        trainer.fit(model, train_loader, val_loader, ckpt_path=args.checkpoint)
+    else:
+        trainer.fit(model, train_loader, val_loader)
     
     print("Training completed successfully.")
 

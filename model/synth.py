@@ -42,23 +42,7 @@ class Synth(nn.Module):
             n_mag_noise=n_mag_noise,
             use_checkpoint=use_gradient_checkpointing
         )
-
-        # Advanced vocal synthesizer
-        #self.vocal_synthsizer = VocalOscillator(sampling_rate)
-        # Advanced vocal synthesizer (using the new standalone implementation)
-        '''
-        vocoder_config = VocalSynthConfig(
-            sampling_rate=sampling_rate,
-            n_formants=n_formants,
-            precision=PrecisionMode.FLOAT32,
-            formant_quality=FormantQuality.NORMAL,
-            breath_quality=BreathQuality.NORMAL,
-            use_gpu=True,
-            fallback_to_cpu=False  # Allow fallback to CPU if GPU not available
-        )
         
-        self.vocal_synthesizer = AbstractVocalSynthesizer.create(config=vocoder_config)
-        '''
         self.harmonic_synthsizer = HarmonicOscillator(sampling_rate)
 
 
