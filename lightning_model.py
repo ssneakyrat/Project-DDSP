@@ -96,30 +96,36 @@ class LightningModel(pl.LightningModule):
             self.log(f'train_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
         # Log audio occasionally
-        if self.current_epoch % self.config['logging'].get('audio_log_every_n_epoch', 10) == 0 and batch_idx % 50 == 0:
-            self._log_audio(batch, signal, 'train')
+        #if self.current_epoch % self.config['logging'].get('audio_log_every_n_epoch', 10) == 0 and batch_idx % 50 == 0:
+        #    self._log_audio(batch, signal, 'train')
 
         return total_loss
     
     def validation_step(self, batch, batch_idx):
-        # Forward
-        signal, f0_pred, _, _ = self(batch)
-
+        signal, f0_pred, _, components = self(batch)
+            
+        # Extract harmonic amplitudes if amplitude loss is enabled
+        amplitudes_pred = None
+        if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
+            # This is a placeholder - you would need to extract actual amplitudes
+            harmonic, noise, amplitudes_pred = components
+        
         # Compute Loss
         loss_dict = self.loss_fn(
-            signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+            signal, batch['audio'], 
+            f0_pred, batch['f0'], 
+            mel_input=batch.get('mel', None),
+            amplitudes_pred=amplitudes_pred,
+            amplitudes_true=batch.get('amplitudes', None)
+        )
         
+        # Extract total loss
+        total_loss = loss_dict['loss']
+
         # Log losses
         for loss_name, loss_value in loss_dict.items():
             self.log(f'val_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
-        # Extract total loss
-        total_loss = loss_dict['loss']
-        
-        # Log audio for first few batches
-        if batch_idx < 3:  # Limit to save space
-            self._log_audio(batch, signal, 'val')
-
         return total_loss
     
     def _log_audio(self, batch, signal, stage):
