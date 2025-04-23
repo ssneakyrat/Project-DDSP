@@ -197,6 +197,9 @@ class SingVocoder(nn.Module):
         language_emb = self.language_embedding(language_id)  # [B, 1, language_dim]
         language_emb = language_emb.expand(-1, n_frames, -1)  # [B, T, language_dim]
         
+        if f0.dim() == 2:  # If f0 is [B, T]
+            f0 = f0.unsqueeze(-1)  # Make it [B, T, 1]
+
         # Concatenate inputs
         combined = torch.cat([
             phone_emb,         # [B, T, phone_dim]
