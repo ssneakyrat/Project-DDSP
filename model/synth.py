@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 
 # Import the optimized modules
-from ddsp.melception import Melception
-from ddsp.expression_predictor import ExpressionPredictor
-#from ddsp.vocal_oscillator import VocalOscillator
-from ddsp.standalone_vocoder import AbstractVocalSynthesizer, VocalSynthConfig, PrecisionMode, FormantQuality, BreathQuality
+from ddsp.modules import HarmonicOscillator
+from model.sing_vocoder import SingVocoder
+#from ddsp.standalone_vocoder import AbstractVocalSynthesizer, VocalSynthConfig, PrecisionMode, FormantQuality, BreathQuality
 
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample
 
@@ -20,6 +19,9 @@ class Synth(nn.Module):
             n_mag_harmonic,
             n_mag_noise,
             n_harmonics,
+            phone_map_len,
+            singer_map_len,
+            language_map_len,
             n_formants=4,
             n_breath_bands=8,
             n_mels=80,
@@ -30,33 +32,22 @@ class Synth(nn.Module):
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
         self.register_buffer("block_size", torch.tensor(block_size))
         
-        # Core parameter predictor (optimized for memory efficiency)
-        core_split_map = {
-            'f0': 1, 
-            'A': 1,
-            'amplitudes': n_harmonics,
-            'harmonic_magnitude': n_mag_harmonic,
-            'noise_magnitude': n_mag_noise
-        }
-        self.mel2ctrl = Melception(
-            input_channel=n_mels, 
-            output_splits=core_split_map,
-            dim_model=48,  # Reduced from default 64
-            use_checkpoint=use_gradient_checkpointing
-        )
-
-        # Dedicated expression parameter predictor for vocal characteristics
-        self.expression_predictor = ExpressionPredictor(
-            input_dim=n_mels,
-            hidden_dim=48,
-            n_formants=n_formants,
-            n_breath_bands=n_breath_bands,
+        # Replace Melception and ExpressionPredictor with SingVocoder
+        self.sing_vocoder = SingVocoder(
+            phone_map_len=phone_map_len,
+            singer_map_len=singer_map_len,
+            language_map_len=language_map_len,
+            hidden_dim=256,
+            n_harmonics=n_harmonics,
+            n_mag_harmonic=n_mag_harmonic,
+            n_mag_noise=n_mag_noise,
             use_checkpoint=use_gradient_checkpointing
         )
 
         # Advanced vocal synthesizer
         #self.vocal_synthsizer = VocalOscillator(sampling_rate)
         # Advanced vocal synthesizer (using the new standalone implementation)
+        '''
         vocoder_config = VocalSynthConfig(
             sampling_rate=sampling_rate,
             n_formants=n_formants,
@@ -68,8 +59,11 @@ class Synth(nn.Module):
         )
         
         self.vocal_synthesizer = AbstractVocalSynthesizer.create(config=vocoder_config)
+        '''
+        self.harmonic_synthsizer = HarmonicOscillator(sampling_rate)
 
-    def forward(self, mel, initial_phase=None):
+
+    def forward(self, batch, initial_phase=None):
         '''
         Predict control parameters from mel spectrogram and synthesize audio
         
@@ -83,13 +77,20 @@ class Synth(nn.Module):
             final_phase: Final phase (for continuity in streaming)
             components: Tuple of (harmonic, noise) components
         '''
-        # Get core synthesis parameters
-        core_params = self.mel2ctrl(mel)
-
-        # Get expression parameters
-        expression_params = self.expression_predictor(mel)
+        # Extract inputs from batch
+        phone_seq = batch['phone_seq_mel']  # Use mel-aligned phonemes
+        f0_in = batch['f0']
+        singer_id = batch['singer_id']
+        language_id = batch['language_id']
         
-        # Unpack and process core parameters
+        print(phone_seq.shape)
+        print(f0_in.shape)
+        print(singer_id.shape)
+        print(language_id.shape)
+        # Get synthesis parameters from SingVocoder
+        core_params = self.sing_vocoder(phone_seq, f0_in, singer_id, language_id)
+        
+        # Process f0
         f0_unit = core_params['f0']  # units
         f0_unit = torch.sigmoid(f0_unit)
         f0 = unit_to_hz2(f0_unit, hz_min=80.0, hz_max=1000.0)
@@ -109,55 +110,42 @@ class Synth(nn.Module):
         amplitudes *= A
 
         # Get dimensions
-        B, n_frames, _ = pitch.shape
+        batch_size, n_frames, _ = pitch.shape
         
         # Upsample to audio rate
         pitch = upsample(pitch, self.block_size)
         amplitudes = upsample(amplitudes, self.block_size)
-        
-        # Upsample expression parameters
-        expression_upsampled = {}
-        for key, value in expression_params.items():
-            expression_upsampled[key] = upsample(value, self.block_size)
+
+        # harmonic
+        harmonic, final_phase = self.harmonic_synthsizer(
+            pitch, amplitudes, initial_phase)
+        harmonic = frequency_filter(
+                        harmonic,
+                        src_param)
         '''
-        # Synthesize harmonic component with advanced vocal parameters
-        harmonic, final_phase = self.vocal_synthsizer(
-            pitch, 
-            amplitudes, 
-            vibrato_rate=expression_upsampled['vibrato_rate'],
-            vibrato_depth=expression_upsampled['vibrato_depth'],
-            formant_freqs=expression_upsampled['formant_freqs'],
-            formant_bandwidths=expression_upsampled['formant_bandwidths'],
-            formant_gains=expression_upsampled['formant_gains'],
-            glottal_open_quotient=expression_upsampled['glottal_open_quotient'],
-            phase_coherence=expression_upsampled['phase_coherence'],
-            breathiness=expression_upsampled['breathiness'],
-            breath_spectral_shape=expression_upsampled['breath_spectral_shape'],
-            initial_phase=initial_phase
-        )
-        '''
-        # Synthesize harmonic component with advanced vocal parameters
+        # Synthesize harmonic component with vocal parameters
         harmonic, final_phase = self.vocal_synthesizer(
             pitch, 
             amplitudes, 
-            initial_phase=initial_phase,
-            vibrato_rate=expression_upsampled['vibrato_rate'],
-            vibrato_depth=expression_upsampled['vibrato_depth'],
-            formant_freqs=expression_upsampled['formant_freqs'],
-            formant_bandwidths=expression_upsampled['formant_bandwidths'],
-            formant_gains=expression_upsampled['formant_gains'],
-            glottal_open_quotient=expression_upsampled['glottal_open_quotient'],
-            phase_coherence=expression_upsampled['phase_coherence'],
-            breathiness=expression_upsampled['breathiness'],
-            breath_spectral_shape=expression_upsampled['breath_spectral_shape']
+            initial_phase=initial_phase
+            #vibrato_rate=expression_params['vibrato_rate'],
+            #vibrato_depth=expression_params['vibrato_depth'],
+            #formant_freqs=expression_params['formant_freqs'],
+            #formant_bandwidths=expression_params['formant_bandwidths'],
+            #formant_gains=expression_params['formant_gains'],
+            #glottal_open_quotient=expression_params['glottal_open_quotient'],
+            #phase_coherence=expression_params['phase_coherence'],
+            #breathiness=expression_params['breathiness'],
+            #breath_spectral_shape=expression_params['breath_spectral_shape']
         )
+        '''
         # Apply spectral filtering to harmonic component
         harmonic = frequency_filter(
             harmonic,
             src_param
         )
             
-        # Generate noise component (breath noise is already handled in VocalOscillator)
+        # Generate noise component
         noise = torch.rand_like(harmonic).to(noise_param) * 2 - 1
         noise = frequency_filter(
             noise,

@@ -20,13 +20,16 @@ class LightningModel(pl.LightningModule):
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', True)
         self.use_mixed_precision = config['training'].get('precision', '32') in ['16', '16-mixed']
         
-        # Initialize enhanced synthesizer model
+        # Initialize enhanced synthesizer model with the new inputs
         self.model = Synth(
             sampling_rate=config['model']['sample_rate'],
             block_size=config['model']['hop_length'],
             n_mag_harmonic=config['model']['n_mag_harmonic'],
             n_mag_noise=config['model']['n_mag_noise'],
             n_harmonics=config['model']['n_harmonics'],
+            phone_map_len=phone_map_len,
+            singer_map_len=singer_map_len,
+            language_map_len=language_map_len,
             n_formants=config['model'].get('n_formants', 4),
             n_breath_bands=config['model'].get('n_breath_bands', 8),
             n_mels=config['model'].get('n_mels', 80),
@@ -35,11 +38,15 @@ class LightningModel(pl.LightningModule):
 
         # Initialize loss function with mel spectrogram loss
         self.loss_fn = HybridLoss(
-            use_mel_loss=config['loss']['use_mel_loss'],
+            use_mel_loss=config['loss'].get('use_mel_loss', False),
+            use_mss_loss=config['loss'].get('use_mss_loss', True),
+            use_f0_loss=config['loss'].get('use_f0_loss', True),
+            use_amplitude_loss=config['loss'].get('use_amplitude_loss', False),
+            amplitude_weight=config['loss'].get('amplitude_weight', 0.1),
             n_ffts=config['loss']['n_ffts'],
             sample_rate=config['model']['sample_rate'],
             n_mels=config['model']['n_mels'],
-            mel_weight=config['loss']['mel_weight'],
+            mel_weight=config['loss'].get('mel_weight', 0.5),
         )
         
         # Initialize automatic mixed precision scaler if needed
@@ -47,7 +54,7 @@ class LightningModel(pl.LightningModule):
             self.scaler = torch.cuda.amp.GradScaler()
     
     def forward(self, batch):
-        return self.model(batch['mel'])
+        return self.model(batch)
     
     def training_step(self, batch, batch_idx):
         # Use mixed precision where available for training

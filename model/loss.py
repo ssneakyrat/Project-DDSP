@@ -7,13 +7,22 @@ import torchaudio
 
 
 class HybridLoss(nn.Module):
-    def __init__(self, n_ffts, use_mel_loss=False, sample_rate=16000, n_mels=80, mel_weight=1.0):
+    def __init__(self, n_ffts, use_mel_loss=False, sample_rate=16000, n_mels=80, mel_weight=1.0,
+                 use_mss_loss=True, use_f0_loss=True, use_amplitude_loss=False, amplitude_weight=0.1):
         super().__init__()
         self.loss_mss_func = MSSLoss(n_ffts)
         self.f0_loss_func = F0L1Loss()
-        self.fo_slow_loss_func = F0SlowLoss()
+        self.amplitude_loss_func = AmplitudeLoss()
+        
+        # Loss toggling flags
+        self.use_mss_loss = use_mss_loss
+        self.use_f0_loss = use_f0_loss
+        self.use_amplitude_loss = use_amplitude_loss
         self.use_mel_loss = use_mel_loss
 
+        # Store weights
+        self.amplitude_weight = float(amplitude_weight)
+        
         if self.use_mel_loss:
             # Add mel spectrogram loss
             self.mel_loss_func = MelSpectrogramLoss(
@@ -26,53 +35,85 @@ class HybridLoss(nn.Module):
             # Ensure mel_weight is a float scalar, not a tensor
             self.mel_weight = float(mel_weight)  # Convert to Python float
 
-    def forward(self, y_pred, y_true, f0_pred, f0_true, mel_input=None):
-        # Get multi-scale spectrogram loss
-        loss_mss = self.loss_mss_func(y_pred, y_true)
+    def forward(self, y_pred, y_true, f0_pred, f0_true, mel_input=None, amplitudes_pred=None, amplitudes_true=None):
+        # Initialize loss components with default zero values
+        loss_mss = torch.tensor(0.0, device=y_pred.device)
+        loss_f0 = torch.tensor(0.0, device=y_pred.device)
+        loss_amplitude = torch.tensor(0.0, device=y_pred.device)
+        loss_mel = torch.tensor(0.0, device=y_pred.device)
         
-        # Get F0 loss
-        loss_f0 = self.f0_loss_func(f0_pred, f0_true)
+        # Calculate active loss components
+        if self.use_mss_loss:
+            loss_mss = self.loss_mss_func(y_pred, y_true)
         
-        if self.use_mel_loss:
-            # Init default values for mel loss
-            loss_mel = torch.tensor(0.0, device=y_pred.device)
-            
-            # Calculate mel spectrogram loss only if mel_input is provided
-            if mel_input is not None:
-                try:
-                    loss_mel = self.mel_loss_func(y_pred, mel_input)
-                    
-                    # Ensure loss_mel is a scalar
-                    if loss_mel.numel() > 1:  # If it has more than one element
-                        loss_mel = loss_mel.mean()  # Convert to scalar by taking mean
-                except Exception as e:
-                    print(f"Error in mel loss calculation: {e}")
-                    # Keep default zero value
-                    loss_mel = torch.tensor(0.0, device=y_pred.device)
+        if self.use_f0_loss and f0_pred is not None and f0_true is not None:
+            loss_f0 = self.f0_loss_func(f0_pred, f0_true)
         
-        # Calculate the total loss
-        loss = loss_mss + loss_f0
-            
-        if self.use_mel_loss:
-            # Only add mel loss if it's valid
-            if mel_input is not None and torch.isfinite(loss_mel).all():
-                # Use explicit scalar multiplication to avoid issues
-                loss = loss + (loss_mel * self.mel_weight)
+        if self.use_amplitude_loss and amplitudes_pred is not None and amplitudes_true is not None:
+            loss_amplitude = self.amplitude_loss_func(amplitudes_pred, amplitudes_true)
         
-        if self.use_mel_loss:
-            return {
-            'loss_f0': loss_f0.detach(),
-            'loss_mss': loss_mss.detach(),
-            'loss_mel': loss_mel.detach(),
+        if self.use_mel_loss and mel_input is not None:
+            try:
+                loss_mel = self.mel_loss_func(y_pred, mel_input)
+                
+                # Ensure loss_mel is a scalar
+                if loss_mel.numel() > 1:  # If it has more than one element
+                    loss_mel = loss_mel.mean()  # Convert to scalar by taking mean
+            except Exception as e:
+                print(f"Error in mel loss calculation: {e}")
+                # Keep default zero value
+                loss_mel = torch.tensor(0.0, device=y_pred.device)
+        
+        # Calculate the total loss with weights
+        loss = (loss_mss if self.use_mss_loss else 0.0) + \
+               (loss_f0 if self.use_f0_loss else 0.0) + \
+               (loss_amplitude * self.amplitude_weight if self.use_amplitude_loss else 0.0) + \
+               (loss_mel * self.mel_weight if self.use_mel_loss else 0.0)
+        
+        # Return dictionary of all losses for logging
+        result = {
             'loss': loss
         }
-        else:
-            # Return dictionary of all losses for logging
-            return {
-                'loss_f0': loss_f0.detach(),
-                'loss_mss': loss_mss.detach(),
-                'loss': loss
-            }
+        
+        # Only include used losses in the result
+        if self.use_f0_loss:
+            result['loss_f0'] = loss_f0.detach()
+        if self.use_mss_loss:
+            result['loss_mss'] = loss_mss.detach()
+        if self.use_amplitude_loss:
+            result['loss_amplitude'] = loss_amplitude.detach()
+        if self.use_mel_loss:
+            result['loss_mel'] = loss_mel.detach()
+            
+        return result
+
+class AmplitudeLoss(nn.Module):
+    """
+    Loss for harmonic amplitude distribution to match target.
+    """
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, amplitudes_pred, amplitudes_true):
+        """
+        Args:
+            amplitudes_pred: Predicted harmonic amplitudes [B, T, n_harmonics]
+            amplitudes_true: Target harmonic amplitudes [B, T, n_harmonics]
+        """
+        # Normalize amplitudes to sum to 1 along harmonic dimension
+        amplitudes_pred_norm = amplitudes_pred / (amplitudes_pred.sum(dim=-1, keepdim=True) + 1e-8)
+        amplitudes_true_norm = amplitudes_true / (amplitudes_true.sum(dim=-1, keepdim=True) + 1e-8)
+        
+        # Compute KL divergence loss
+        # KL(P||Q) = sum(P * log(P/Q))
+        # Add epsilon to prevent log(0)
+        epsilon = 1e-8
+        kl_div = amplitudes_true_norm * torch.log((amplitudes_true_norm + epsilon) / (amplitudes_pred_norm + epsilon))
+        
+        # Sum across harmonics, mean across batch and time
+        loss = kl_div.sum(dim=-1).mean()
+        
+        return loss
 
 class SSSLoss(nn.Module):
     """
@@ -90,17 +131,8 @@ class SSSLoss(nn.Module):
     def forward(self, x_true, x_pred):
         min_len = np.min([x_true.shape[1], x_pred.shape[1]])
         
-        # print('--------')
-        # print(min_len)
-        # print('x_pred:', x_pred.shape)
-        # print('x_true:', x_true.shape)
-
         x_true = x_true[:, -min_len:]
         x_pred = x_pred[:, -min_len:]
-
-        # print('x_pred:', x_pred.shape)
-        # print('x_true:', x_true.shape)
-        # print('--------\n\n\n')
 
         S_true = self.spec(x_true)
         S_pred = self.spec(x_pred)
@@ -152,8 +184,6 @@ class F0L1Loss(nn.Module):
         self.iteration = 0
     def forward(self, f0_predict, f0_hz_true):
 
-        # print('pitch pred:', f0_predict[0,:])
-        # print('pitch anno:', f0_hz_true[0,:])
         self.iteration += 1
         
         if (len(f0_hz_true.size()) != 3):
