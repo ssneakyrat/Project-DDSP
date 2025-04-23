@@ -548,6 +548,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.sample_rate = sample_rate
         self.context_window_samples = context_window_samples
         self.max_files = max_files
+        self.n_harmonics = n_harmonics
         
         # Parameters for mel spectrogram extraction
         self.n_mels = n_mels
@@ -627,7 +628,8 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         for batch_idx, batch in enumerate(tqdm(batches, desc="Processing batches on GPU")):
             batch_results = stage2_extract_features_batch(
                 batch, self.hop_length, self.win_length, 
-                self.n_mels, self.fmin, self.fmax, self.device
+                self.n_mels, self.fmin, self.fmax, self.device,
+                n_harmonics=self.n_harmonics
             )
             processed_features.extend(batch_results)
         

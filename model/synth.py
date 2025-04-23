@@ -108,6 +108,9 @@ class Synth(nn.Module):
         # Get dimensions
         batch_size, n_frames, _ = pitch.shape
         
+        # Save the original frame-rate amplitudes for loss calculation
+        frame_rate_amplitudes = amplitudes.clone()
+
         # Upsample to audio rate
         pitch = upsample(pitch, self.block_size)
         amplitudes = upsample(amplitudes, self.block_size)
@@ -151,7 +154,7 @@ class Synth(nn.Module):
         # Combine components
         signal = harmonic + noise
 
-        return signal, f0, final_phase, (harmonic, noise, amplitudes)
+        return signal, f0, final_phase, (harmonic, noise, frame_rate_amplitudes)
     
     def set_gradient_checkpointing(self, enabled=True):
         """

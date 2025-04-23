@@ -71,6 +71,7 @@ def main():
         fmax=config['dataset'].get('fmax', 12000),
         num_workers=config['dataset']['num_workers'],
         device='cuda' if torch.cuda.is_available() else 'cpu',
+        n_harmonics=config['model']['n_harmonics'],
     )
     
     # Calculate train/val split sizes
