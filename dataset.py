@@ -77,6 +77,76 @@ class ProcessedFeatures:
     phone_counts: Dict[str, int]
     audio_duration_sec: float
 
+def extract_harmonic_amplitudes(audio, f0, sample_rate, hop_length, n_harmonics, window_length=1024):
+    """
+    Extract harmonic amplitudes from audio based on F0 values.
+    
+    Args:
+        audio (np.ndarray): Audio signal
+        f0 (np.ndarray): F0 values aligned with frames (hop_length spacing)
+        sample_rate (int): Sample rate of audio
+        hop_length (int): Hop length for frame alignment
+        n_harmonics (int): Number of harmonics to extract
+        window_length (int): Window length for STFT
+        
+    Returns:
+        np.ndarray: Harmonic amplitudes with shape [time_frames, n_harmonics]
+    """
+    # Convert audio to tensor for STFT calculation
+    audio_tensor = torch.FloatTensor(audio).unsqueeze(0)
+    
+    # Calculate STFT for spectral analysis
+    stft = torch.stft(
+        audio_tensor, 
+        n_fft=window_length, 
+        hop_length=hop_length, 
+        win_length=window_length, 
+        window=torch.hann_window(window_length), 
+        return_complex=True
+    )
+    
+    # Convert to magnitude spectrum
+    mag_spec = torch.abs(stft)[0].cpu().numpy()  # [freq_bins, time_frames]
+    
+    # Transpose to [time_frames, freq_bins] for easier processing
+    mag_spec = mag_spec.T
+    
+    # Create frequency axis
+    freq_bins = mag_spec.shape[1]
+    freqs = np.linspace(0, sample_rate/2, freq_bins)
+    
+    # Initialize array for harmonic amplitudes
+    time_frames = len(f0)
+    amplitudes = np.zeros((time_frames, n_harmonics))
+    
+    # For each time frame
+    for t in range(min(time_frames, mag_spec.shape[0])):
+        # Skip unvoiced or invalid frames
+        if f0[t] <= 0:
+            continue
+            
+        # For each harmonic
+        for h in range(n_harmonics):
+            # Calculate frequency of this harmonic
+            harmonic_freq = f0[t] * (h + 1)  # h+1 because first harmonic is 1*f0
+            
+            # Skip if harmonic is above Nyquist frequency
+            if harmonic_freq >= sample_rate/2:
+                continue
+                
+            # Find closest frequency bin
+            bin_idx = np.argmin(np.abs(freqs - harmonic_freq))
+            
+            # Extract amplitude at this bin
+            amplitudes[t, h] = mag_spec[t, bin_idx]
+    
+    # Normalize amplitudes per frame (make sum=1 for each frame)
+    for t in range(time_frames):
+        if np.sum(amplitudes[t]) > 0:
+            amplitudes[t] = amplitudes[t] / np.sum(amplitudes[t])
+    
+    return amplitudes
+
 # Stage 1: File gathering and initial processing
 def stage1_process_file(file_metadata, phone_map, sample_rate):
     """Process a single audio/lab file pair and perform initial processing."""
@@ -187,14 +257,15 @@ def process_file_for_mp(args):
     return stage1_process_file(file_metadata, phone_map, sample_rate)
 
 # Stage 2: GPU-based feature extraction
-def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fmin, fmax, device):
+def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fmin, fmax, device, n_harmonics=10):
     """
     Process a batch of audio files on GPU for feature extraction.
     This runs in a single process to maximize GPU utilization.
     
-    UPDATED: Now includes cross-aligned features:
+    UPDATED: Now includes:
     - phone_seq_mel: phones aligned with mel frames
     - f0_audio: f0 aligned with audio frames
+    - amplitudes: harmonic amplitudes aligned with mel frames
     """
     results = []
     
@@ -233,6 +304,16 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
         f0 = extract_f0_parselmouth(audio, SAMPLE_RATE, hop_length)
         f0_tensor = torch.FloatTensor(f0).to(device)
         
+        # NEW: Extract harmonic amplitudes based on F0
+        harmonic_amplitudes = extract_harmonic_amplitudes(
+            audio,
+            f0,
+            SAMPLE_RATE, 
+            hop_length, 
+            n_harmonics,
+            win_length
+        )
+        
         # Calculate the exact expected F0 length for consistency
         target_f0_length = context_window_samples // hop_length + 1
         
@@ -265,7 +346,12 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             f0_len = min(len(f0), target_f0_length)
             f0_padded[:f0_len] = f0[:f0_len]
             
-            # NEW: Create phone sequence aligned with mel frames (downsampling)
+            # NEW: Ensure consistent harmonic amplitudes length
+            amplitudes_padded = np.zeros((target_f0_length, n_harmonics))
+            amplitudes_len = min(len(harmonic_amplitudes), target_f0_length)
+            amplitudes_padded[:amplitudes_len] = harmonic_amplitudes[:amplitudes_len]
+            
+            # Create phone sequence aligned with mel frames (downsampling)
             phone_seq_mel = np.zeros(target_f0_length)
             for i in range(target_f0_length):
                 start_idx = i * hop_length
@@ -276,7 +362,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     if len(unique_phones) > 0:  # Make sure there's at least one phone
                         phone_seq_mel[i] = unique_phones[np.argmax(counts)]
             
-            # NEW: Create F0 aligned with audio frames (upsampling)
+            # Create F0 aligned with audio frames (upsampling)
             t_mel = np.arange(target_f0_length) * hop_length / SAMPLE_RATE  # Time in seconds for each mel frame
             t_audio = np.arange(context_window_samples) / SAMPLE_RATE      # Time in seconds for each audio sample
             if len(f0_padded) > 0:
@@ -288,10 +374,11 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             segments.append({
                 'audio': audio_data.audio,
                 'phone_seq': phone_seq,           # Aligned with audio frames
-                'phone_seq_mel': phone_seq_mel,   # NEW: Aligned with mel frames
+                'phone_seq_mel': phone_seq_mel,   # Aligned with mel frames
                 'f0': f0_padded,                  # Aligned with mel frames
-                'f0_audio': f0_audio,             # NEW: Aligned with audio frames
+                'f0_audio': f0_audio,             # Aligned with audio frames
                 'mel': mel_np,                    # Aligned with mel frames
+                'amplitudes': amplitudes_padded,  # NEW: Harmonic amplitudes aligned with mel frames
                 'singer_id': metadata.singer_idx,
                 'language_id': metadata.language_idx,
                 'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}"
@@ -321,6 +408,15 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     actual_f0_len = min(len(f0) - f0_start_idx, target_f0_length)
                     segment_f0[:actual_f0_len] = f0[f0_start_idx:f0_start_idx + actual_f0_len]
                 
+                # NEW: Extract harmonic amplitudes for this segment
+                amplitudes_start_idx = i // hop_length
+                amplitudes_end_idx = amplitudes_start_idx + target_f0_length
+                
+                segment_amplitudes = np.zeros((target_f0_length, n_harmonics))
+                if amplitudes_start_idx < len(harmonic_amplitudes):
+                    actual_amplitudes_len = min(len(harmonic_amplitudes) - amplitudes_start_idx, target_f0_length)
+                    segment_amplitudes[:actual_amplitudes_len] = harmonic_amplitudes[amplitudes_start_idx:amplitudes_start_idx + actual_amplitudes_len]
+                
                 # Create phone sequence for this segment (aligned with audio frames)
                 phone_seq = np.zeros(context_window_samples)
                 for p, start, end in zip(phone_indices, start_times, end_times):
@@ -329,7 +425,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     if seg_end > seg_start and seg_start < context_window_samples:
                         phone_seq[seg_start:seg_end] = p
                 
-                # NEW: Create phone sequence aligned with mel frames (downsampling)
+                # Create phone sequence aligned with mel frames (downsampling)
                 phone_seq_mel = np.zeros(target_f0_length)
                 for j in range(target_f0_length):
                     start_idx = j * hop_length
@@ -340,9 +436,9 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                         if len(unique_phones) > 0:  # Make sure there's at least one phone
                             phone_seq_mel[j] = unique_phones[np.argmax(counts)]
                 
-                # NEW: Create F0 aligned with audio frames (upsampling)
-                t_mel = np.arange(target_f0_length) * hop_length / SAMPLE_RATE  # Time in seconds for each mel frame
-                t_audio = np.arange(context_window_samples) / SAMPLE_RATE      # Time in seconds for each audio sample
+                # Create F0 aligned with audio frames (upsampling)
+                t_mel = np.arange(target_f0_length) * hop_length / SAMPLE_RATE
+                t_audio = np.arange(context_window_samples) / SAMPLE_RATE
                 if len(segment_f0) > 0:
                     # Use linear interpolation to upsample F0 to audio sample rate
                     f0_audio = np.interp(t_audio, t_mel, segment_f0)
@@ -351,11 +447,12 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                 
                 segments.append({
                     'audio': segment_audio,
-                    'phone_seq': phone_seq,           # Aligned with audio frames
-                    'phone_seq_mel': phone_seq_mel,   # NEW: Aligned with mel frames
-                    'f0': segment_f0,                 # Aligned with mel frames
-                    'f0_audio': f0_audio,             # NEW: Aligned with audio frames
-                    'mel': segment_mel_np,            # Aligned with mel frames
+                    'phone_seq': phone_seq,
+                    'phone_seq_mel': phone_seq_mel,
+                    'f0': segment_f0,
+                    'f0_audio': f0_audio,
+                    'mel': segment_mel_np,
+                    'amplitudes': segment_amplitudes,  # NEW: Harmonic amplitudes aligned with mel frames
                     'singer_id': metadata.singer_idx,
                     'language_id': metadata.language_idx,
                     'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}_{i}"
@@ -762,37 +859,41 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         
         audio = torch.FloatTensor(item['audio'])
         phone_seq = torch.LongTensor(item['phone_seq'])                  # Aligned with audio
-        phone_seq_mel = torch.LongTensor(item['phone_seq_mel'])          # NEW: Aligned with mel frames
+        phone_seq_mel = torch.LongTensor(item['phone_seq_mel'])          # Aligned with mel frames
         f0 = torch.FloatTensor(item['f0'])                               # Aligned with mel frames
-        f0_audio = torch.FloatTensor(item['f0_audio'])                   # NEW: Aligned with audio frames  
+        f0_audio = torch.FloatTensor(item['f0_audio'])                   # Aligned with audio frames  
         mel = torch.FloatTensor(item['mel'])
         singer_id = torch.LongTensor([item['singer_id']])
         language_id = torch.LongTensor([item['language_id']])
         
+        # NEW: Load harmonic amplitudes
+        amplitudes = torch.FloatTensor(item['amplitudes'])
+        
         # Create one-hot encodings
         phone_one_hot = F.one_hot(phone_seq.long(), num_classes=len(self.phone_map)+1).float()
-        phone_mel_one_hot = F.one_hot(phone_seq_mel.long(), num_classes=len(self.phone_map)+1).float()  # NEW
+        phone_mel_one_hot = F.one_hot(phone_seq_mel.long(), num_classes=len(self.phone_map)+1).float()
         singer_one_hot = F.one_hot(singer_id.long(), num_classes=len(self.singer_map)).float().squeeze(0)
         language_one_hot = F.one_hot(language_id.long(), num_classes=len(self.language_map)).float().squeeze(0)
         
         return {
             'audio': audio,
             'phone_seq': phone_seq,                    # Aligned with audio frames
-            'phone_seq_mel': phone_seq_mel,            # NEW: Aligned with mel frames
+            'phone_seq_mel': phone_seq_mel,            # Aligned with mel frames
             'phone_one_hot': phone_one_hot,            # Aligned with audio frames
-            'phone_mel_one_hot': phone_mel_one_hot,    # NEW: Aligned with mel frames
+            'phone_mel_one_hot': phone_mel_one_hot,    # Aligned with mel frames
             'f0': f0,                                  # Aligned with mel frames
-            'f0_audio': f0_audio,                      # NEW: Aligned with audio frames
+            'f0_audio': f0_audio,                      # Aligned with audio frames
             'mel': mel,                                # Aligned with mel frames
             'singer_id': singer_id,
             'language_id': language_id,
             'singer_one_hot': singer_one_hot,
             'language_one_hot': language_one_hot,
+            'amplitudes': amplitudes,                  # NEW: Harmonic amplitudes aligned with mel frames
             'filename': item['filename']
         }
 
 def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_workers=True, 
-                 max_files=None, device='cuda', collate_fn=None, shuffle=True):
+                 max_files=None, device='cuda', collate_fn=None, shuffle=True, n_harmonics=10):
     """
     Get a dataloader for the singing voice dataset.
     
@@ -802,8 +903,8 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         pin_memory: Whether to pin memory in DataLoader
         persistent_workers: Whether to keep workers alive between epochs
         max_files: Maximum number of files to process
-        dataset_workers: Number of workers for dataset processing (None = auto)
         device: Device to use for GPU acceleration ('cuda' or 'cpu')
+        n_harmonics: Number of harmonics to extract (NEW)
     """
     dataset = SingingVoiceDataset(
         rebuild_cache=False, 
@@ -815,6 +916,7 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         fmax=FMAX,
         num_workers=num_workers,
         device=device,
+        n_harmonics=n_harmonics,  # NEW: Pass n_harmonics parameter
     )
     
     dataloader = torch.utils.data.DataLoader(
