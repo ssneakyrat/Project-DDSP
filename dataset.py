@@ -549,7 +549,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.context_window_samples = context_window_samples
         self.max_files = max_files
         self.n_harmonics = n_harmonics
-        
+
         # Parameters for mel spectrogram extraction
         self.n_mels = n_mels
         self.hop_length = hop_length
@@ -893,28 +893,42 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         # Load harmonic amplitudes
         amplitudes = torch.FloatTensor(item['amplitudes'])
         
-        # NEW: Pad tensors to fixed lengths
-        # 1. Pad audio-aligned tensors
+        # 1. Handle audio-aligned tensors - PAD OR TRUNCATE to exact length
         audio_length = audio.size(0)
-        if audio_length < self.max_audio_length:
-            pad_length = self.max_audio_length - audio_length
-            audio = F.pad(audio, (0, pad_length))
-            phone_seq = F.pad(phone_seq, (0, pad_length))
-            f0_audio = F.pad(f0_audio, (0, pad_length))
+        if audio_length != self.max_audio_length:
+            if audio_length < self.max_audio_length:
+                # Pad if too short
+                pad_length = self.max_audio_length - audio_length
+                audio = F.pad(audio, (0, pad_length))
+                phone_seq = F.pad(phone_seq, (0, pad_length))
+                f0_audio = F.pad(f0_audio, (0, pad_length))
+            else:
+                # Truncate if too long
+                audio = audio[:self.max_audio_length]
+                phone_seq = phone_seq[:self.max_audio_length]
+                f0_audio = f0_audio[:self.max_audio_length]
         
-        # 2. Pad mel-aligned tensors
+        # 2. Handle mel-aligned tensors - PAD OR TRUNCATE to exact length
         mel_frames = mel.size(0)
-        if mel_frames < self.max_mel_frames:
-            pad_frames = self.max_mel_frames - mel_frames
-            # For 2D tensors (mel)
-            mel = F.pad(mel, (0, 0, 0, pad_frames))
-            # For 1D tensors
-            phone_seq_mel = F.pad(phone_seq_mel, (0, pad_frames))
-            f0 = F.pad(f0, (0, pad_frames))
-            # For 2D amplitudes
-            amplitudes = F.pad(amplitudes, (0, 0, 0, pad_frames))
+        if mel_frames != self.max_mel_frames:
+            if mel_frames < self.max_mel_frames:
+                # Pad if too short
+                pad_frames = self.max_mel_frames - mel_frames
+                # For 2D tensors (mel)
+                mel = F.pad(mel, (0, 0, 0, pad_frames))
+                # For 1D tensors
+                phone_seq_mel = F.pad(phone_seq_mel, (0, pad_frames))
+                f0 = F.pad(f0, (0, pad_frames))
+                # For 2D amplitudes
+                amplitudes = F.pad(amplitudes, (0, 0, 0, pad_frames))
+            else:
+                # Truncate if too long
+                mel = mel[:self.max_mel_frames, :]
+                phone_seq_mel = phone_seq_mel[:self.max_mel_frames]
+                f0 = f0[:self.max_mel_frames]
+                amplitudes = amplitudes[:self.max_mel_frames, :]
         
-        # Create one-hot encodings
+        # Create one-hot encodings from the now-standardized tensors
         phone_one_hot = F.one_hot(phone_seq.long(), num_classes=len(self.phone_map)+1).float()
         phone_mel_one_hot = F.one_hot(phone_seq_mel.long(), num_classes=len(self.phone_map)+1).float()
         singer_one_hot = F.one_hot(singer_id.long(), num_classes=len(self.singer_map)).float().squeeze(0)

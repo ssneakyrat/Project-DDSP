@@ -11,7 +11,7 @@ from dataset import get_dataloader, SingingVoiceDataset
 from lightning_model import LightningModel
 
 def simplified_collate(batch):
-    """Simplified collate function that assumes all tensors are pre-padded."""
+    """Robust collate function that handles tensors of different sizes."""
     # Filter out any None values
     batch = [x for x in batch if x is not None]
     if not batch:
@@ -26,8 +26,108 @@ def simplified_collate(batch):
             # For non-tensor data
             batch_dict[key] = [sample[key] for sample in batch]
         else:
-            # For tensor data - simple stacking, no padding needed
-            batch_dict[key] = torch.stack([sample[key] for sample in batch])
+            # Check if all tensors have the same shape
+            shapes = [sample[key].shape for sample in batch]
+            if len(set(str(s) for s in shapes)) > 1:
+                #print(f"WARNING: Inconsistent shapes for {key}: {shapes}")
+                
+                # For handling different dimensions
+                if key in ['audio', 'phone_seq', 'f0_audio']:
+                    # Audio-aligned tensors should be 1D with length 48000
+                    target_size = 48000
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape[0] != target_size:
+                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape[0]} to {target_size}")
+                            if sample[key].shape[0] < target_size:
+                                # Pad
+                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
+                            else:
+                                # Truncate
+                                batch[i][key] = sample[key][:target_size]
+                
+                elif key in ['phone_seq_mel', 'f0']:
+                    # Mel-aligned 1D tensors
+                    target_size = 201  # 48000 // 240 + 1 (for 2-second audio with hop_length=240)
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape[0] != target_size:
+                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape[0]} to {target_size}")
+                            if sample[key].shape[0] < target_size:
+                                # Pad
+                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
+                            else:
+                                # Truncate
+                                batch[i][key] = sample[key][:target_size]
+                
+                elif key == 'mel':
+                    # Mel is 2D [frames, n_mels]
+                    target_frames = 201  # Same as mel-aligned 1D tensors
+                    n_mels = batch[0][key].shape[1]  # Keep n_mels dimension the same
+                    
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape[0] != target_frames:
+                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_frames}, {n_mels}]")
+                            if sample[key].shape[0] < target_frames:
+                                # Pad
+                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
+                            else:
+                                # Truncate
+                                batch[i][key] = sample[key][:target_frames, :]
+                
+                elif key == 'amplitudes':
+                    # Amplitudes is 2D [frames, n_harmonics]
+                    target_frames = 201  # Same as mel-aligned tensors
+                    n_harmonics = batch[0][key].shape[1]  # Keep n_harmonics dimension the same
+                    
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape[0] != target_frames:
+                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_frames}, {n_harmonics}]")
+                            if sample[key].shape[0] < target_frames:
+                                # Pad
+                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
+                            else:
+                                # Truncate
+                                batch[i][key] = sample[key][:target_frames, :]
+                
+                elif key in ['phone_one_hot', 'phone_mel_one_hot']:
+                    # One-hot encoded tensors
+                    # Handle according to their specific dimensions
+                    # For phone_one_hot: [audio_length, n_phones]
+                    # For phone_mel_one_hot: [mel_frames, n_phones]
+                    
+                    if key == 'phone_one_hot':
+                        target_length = 48000
+                    else:  # phone_mel_one_hot
+                        target_length = 201
+                    
+                    n_classes = batch[0][key].shape[1]
+                    
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape[0] != target_length:
+                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_length}, {n_classes}]")
+                            if sample[key].shape[0] < target_length:
+                                # Pad
+                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_length - sample[key].shape[0]))
+                            else:
+                                # Truncate
+                                batch[i][key] = sample[key][:target_length, :]
+                
+                # For other tensors like singer_id, language_id, etc.
+                # These should already be consistent, but just in case:
+                '''
+                else:
+                    most_common_shape = max(shapes, key=shapes.count)
+                    for i, sample in enumerate(batch):
+                        if sample[key].shape != most_common_shape:
+                            #print(f"  Unexpected shape mismatch for {key}: {sample[key].shape} vs {most_common_shape}")
+                            # You could implement reshaping here if needed
+                '''
+            
+            try:
+                # Stack the tensors after ensuring consistent shapes
+                batch_dict[key] = torch.stack([sample[key] for sample in batch])
+            except RuntimeError as e:
+                print(f"ERROR stacking {key} tensors. Shapes: {[sample[key].shape for sample in batch]}")
+                raise e
     
     return batch_dict
 

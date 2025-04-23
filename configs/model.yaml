@@ -31,7 +31,7 @@ loss:
   use_mss_loss: true
   use_f0_loss: true  
   use_amplitude_loss: true
-  amplitude_weight: 0.1
+  amplitude_weight: 0.5
 
 training:
   learning_rate: 0.002
