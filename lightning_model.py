@@ -77,8 +77,7 @@ class LightningModel(pl.LightningModule):
             amplitudes_pred = None
             if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
                 # This is a placeholder - you would need to extract actual amplitudes
-                harmonic, _ = components
-                amplitudes_pred = None  # Replace with actual amplitudes extraction
+                harmonic, noise, amplitudes_pred = components
             
             # Compute Loss
             loss_dict = self.loss_fn(

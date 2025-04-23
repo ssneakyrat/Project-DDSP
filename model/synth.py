@@ -151,7 +151,7 @@ class Synth(nn.Module):
         # Combine components
         signal = harmonic + noise
 
-        return signal, f0, final_phase, (harmonic, noise)
+        return signal, f0, final_phase, (harmonic, noise, amplitudes)
     
     def set_gradient_checkpointing(self, enabled=True):
         """
