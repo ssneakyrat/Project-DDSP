@@ -205,7 +205,7 @@ class VocalOscillator(nn.Module):
     
     def _generate_breath_noise(self, shape, spectral_shape):
         """
-        Generate breath noise with specified spectral shape
+        Generate breath noise with specified spectral shape - optimized version
         
         Args:
             shape: tuple with shape of noise to generate (B, T)
@@ -215,51 +215,59 @@ class VocalOscillator(nn.Module):
             breath_noise: B x T tensor with shaped noise
         """
         batch_size, time_steps = shape
+        device = spectral_shape.device
         
         # Generate white noise
-        noise = torch.randn(shape).to(spectral_shape.device)
+        noise = torch.randn(shape, device=device)
         
-        # Shape spectrum using simple filter bank
-        # Extract spectral shape at middle frame (for simplicity)
+        # Use a simplified spectral shaping approach with band mixing
+        # Extract spectral shape at middle frame for efficiency
         mid_frame = spectral_shape.shape[1] // 2
-        spectral_shape_mid = spectral_shape[:, mid_frame, :]  # B x n_bands
+        spectral_weights = spectral_shape[:, mid_frame, :]  # B x n_bands
         
-        n_bands = spectral_shape_mid.size(1)
-        bands_per_octave = 3
-        min_freq = 80.0  # Hz
+        # Create different noise scales for different frequency bands
+        # without using FFT or complex filtering
+        n_bands = spectral_weights.shape[1]
         
-        # Create filter bank
-        filtered_noise = torch.zeros_like(noise)
+        # Generate multiple noise signals with different characteristics
+        shaped_noise = torch.zeros_like(noise)
         
-        for b in range(batch_size):
-            # FFT of noise
-            noise_fft = torch.fft.rfft(noise[b])
-            freqs = torch.fft.rfftfreq(time_steps, d=1.0/self.fs).to(noise.device)
+        # Create a bank of smoothed noise with different smoothing factors
+        for i in range(n_bands):
+            # Smoothing factor determines frequency content
+            # Higher i = higher frequencies (less smoothing)
+            smooth_factor = 2.0 ** (i / 2.0)  # Exponential scaling of smoothing
             
-            # Apply spectral shape
-            filter_response = torch.zeros(len(freqs)).to(noise.device)
-            
-            for i in range(n_bands):
-                center_freq = min_freq * (2.0 ** (i / bands_per_octave))
-                bandwidth = center_freq * (2.0 ** (0.5 / bands_per_octave)) - center_freq
+            # Create smoothed noise for this band using efficient convolution
+            kernel_size = max(3, int(128 / smooth_factor))
+            if kernel_size % 2 == 0:
+                kernel_size += 1  # Ensure odd kernel size
                 
-                # Apply Gaussian shape for each band
-                freq_response = torch.exp(
-                    -0.5 * ((freqs - center_freq) / bandwidth) ** 2
-                ) * spectral_shape_mid[b, i]
-                
-                filter_response += freq_response
-                
-            # Apply filter
-            filtered_fft = noise_fft * filter_response
+            # Simple Gaussian-like kernel for smoothing
+            kernel = torch.exp(-torch.arange(-(kernel_size//2), kernel_size//2 + 1, device=device)**2 / (2 * (kernel_size/6)**2))
+            kernel = kernel / kernel.sum()  # Normalize
             
-            # IFFT back to time domain
-            filtered_noise[b] = torch.fft.irfft(filtered_fft, n=time_steps)
+            # Reshape for batch 1D convolution
+            kernel = kernel.view(1, 1, -1)
+            band_noise = noise.unsqueeze(1)  # B x 1 x T
             
-            # Normalize
-            filtered_noise[b] = filtered_noise[b] / (torch.std(filtered_noise[b]) + 1e-8)
+            # Apply convolution for smoothing (handles padding automatically)
+            smoothed_noise = torch.nn.functional.conv1d(
+                band_noise, 
+                kernel, 
+                padding='same'
+            ).squeeze(1)  # Back to B x T
             
-        return filtered_noise
+            # Weight by spectral shape and add to result (no in-place operations)
+            band_weights = spectral_weights[:, i].view(batch_size, 1)
+            shaped_noise = shaped_noise + smoothed_noise * band_weights
+        
+        # Normalize without in-place operations
+        mean = shaped_noise.mean(dim=1, keepdim=True)
+        std = shaped_noise.std(dim=1, keepdim=True) + 1e-8
+        normalized_noise = (shaped_noise - mean) / std
+        
+        return normalized_noise
         
     def forward(self, f0, amplitudes, 
                 vibrato_rate=None, vibrato_depth=None,
@@ -292,13 +300,13 @@ class VocalOscillator(nn.Module):
         # Initialize default parameters if not provided
         if initial_phase is None:
             initial_phase = torch.zeros(batch_size, 1, 1).to(device)
-            
+
         # Vibrato parameters
         if vibrato_rate is None:
             vibrato_rate = torch.ones(batch_size, 1, 1).to(device) * self.default_vibrato_rate
         if vibrato_depth is None:
             vibrato_depth = torch.ones(batch_size, 1, 1).to(device) * self.default_vibrato_depth
-            
+
         # Formant parameters
         n_formants = self.default_formant_freqs.size(0)
         if formant_freqs is None:
@@ -307,13 +315,13 @@ class VocalOscillator(nn.Module):
             formant_bandwidths = self.default_formant_bandwidths.reshape(1, 1, n_formants).repeat(batch_size, 1, 1).to(device)
         if formant_gains is None:
             formant_gains = self.default_formant_gains.reshape(1, 1, n_formants).repeat(batch_size, 1, 1).to(device)
-            
+
         # Glottal model parameters
         if glottal_open_quotient is None:
             glottal_open_quotient = torch.ones(batch_size, 1, 1).to(device) * self.default_glottal_open_quotient
         if phase_coherence is None:
             phase_coherence = torch.ones(batch_size, 1, 1).to(device) * 0.5  # Default 50% coherence
-            
+
         # Breathiness parameters
         if breathiness is None:
             breathiness = torch.ones(batch_size, 1, 1).to(device) * self.default_breathiness
@@ -323,14 +331,15 @@ class VocalOscillator(nn.Module):
             breath_spectral_shape = torch.pow(
                 0.7, 
                 torch.arange(n_bands).reshape(1, 1, -1).repeat(batch_size, 1, 1)
-            ).to(device)
+            ).to(device).detach() ## detach, this is not a learnable
         
         # Get voiced mask
         mask = (f0 > 0).detach()
         
         # 1. Apply vibrato to f0
+        #f0_vibrato = self._apply_vibrato(f0.detach(), vibrato_rate, vibrato_depth)
         f0_vibrato = self._apply_vibrato(f0.detach(), vibrato_rate, vibrato_depth)
-        
+
         # 2. Calculate phase
         phase = torch.cumsum(2 * torch.pi * f0_vibrato / self.fs, axis=1) + initial_phase
         n_harmonic = amplitudes.shape[-1]
@@ -371,8 +380,9 @@ class VocalOscillator(nn.Module):
         
         # Final signal (mix harmonic and breath components)
         signal = harmonic + scaled_noise
-        
+
         # Return final phase for continuity
         final_phase = phase[:, -1:, :] % (2 * torch.pi)
         
         return signal, final_phase.detach()
+        #return signal, final_phase.detach()

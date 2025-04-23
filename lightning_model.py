@@ -10,93 +10,82 @@ from torch.optim import AdamW
 from model.synth import Synth
 from model.loss import HybridLoss
 
-from model.dummy_model import DummyModel
-from model.dummy_loss import DummyLoss
-
 class LightningModel(pl.LightningModule):
     def __init__(self, config, phone_map_len, singer_map_len, language_map_len):
         super().__init__()
         self.save_hyperparameters()
         self.config = config
         
-        # Initialize model
+        # Get memory optimization settings
+        self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', True)
+        self.use_mixed_precision = config['training'].get('precision', '32') in ['16', '16-mixed']
+        
+        # Initialize enhanced synthesizer model
         self.model = Synth(
             sampling_rate=config['model']['sample_rate'],
             block_size=config['model']['hop_length'],
             n_mag_harmonic=config['model']['n_mag_harmonic'],
             n_mag_noise=config['model']['n_mag_noise'],
-            n_harmonics=config['model']['n_harmonics']
+            n_harmonics=config['model']['n_harmonics'],
+            n_formants=config['model'].get('n_formants', 4),
+            n_breath_bands=config['model'].get('n_breath_bands', 8),
+            n_mels=config['model'].get('n_mels', 80),
+            use_gradient_checkpointing=self.use_gradient_checkpointing
         )
 
         # Initialize loss function with mel spectrogram loss
-        self.loss_fn = HybridLoss( use_mel_loss=config['loss']['use_mel_loss'],
+        self.loss_fn = HybridLoss(
+            use_mel_loss=config['loss']['use_mel_loss'],
             n_ffts=config['loss']['n_ffts'],
             sample_rate=config['model']['sample_rate'],
-            n_mels=config['model']['n_mels'],  # Default to 80 if not specified
-            mel_weight=config['loss']['mel_weight'],  # Default weight
-        )
-
-        ''' dummy
-        # Initialize model
-        self.model = DummyModel(
-            hidden_size=config['model']['hidden_size'],
-            n_layers=config['model']['n_layers'],
-            dropout=config['model']['dropout'],
             n_mels=config['model']['n_mels'],
-            phone_map_len=phone_map_len,
-            singer_map_len=singer_map_len,
-            language_map_len=language_map_len
+            mel_weight=config['loss']['mel_weight'],
         )
         
-        # Initialize loss function
-        self.loss_fn = DummyLoss()
-        
-        # Track metrics
-        self.train_loss = 0.0
-        self.val_loss = 0.0
-        '''
-        
+        # Initialize automatic mixed precision scaler if needed
+        if self.use_mixed_precision:
+            self.scaler = torch.cuda.amp.GradScaler()
+    
     def forward(self, batch):
         return self.model(batch['mel'])
-        '''
-        return self.model(
-            mel=batch['mel'],
-            phone_seq=batch['phone_seq'],
-            f0=batch['f0'],
-            singer_id=batch['singer_id'],
-            language_id=batch['language_id']
-        )
-        '''
     
     def training_step(self, batch, batch_idx):
-
-        # Forward
-        signal, f0_pred, _, _,  = self(batch)
-        
-        #print('signal:', signal.shape)
-        #print('f0_pred:', f0_pred.shape)
-
-        # Compute Loss with mel input if available
-        loss_dict = self.loss_fn(
-            signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+        # Use mixed precision where available for training
+        if self.use_mixed_precision and not self.trainer.precision.startswith("bf16"):
+            with torch.cuda.amp.autocast():
+                # Forward
+                signal, f0_pred, _, _ = self(batch)
+                
+                # Compute Loss
+                loss_dict = self.loss_fn(
+                    signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+                
+                # Extract total loss
+                total_loss = loss_dict['loss']
+        else:
+            # Standard precision forward
+            signal, f0_pred, _, _ = self(batch)
+            
+            # Compute Loss
+            loss_dict = self.loss_fn(
+                signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+            
+            # Extract total loss
+            total_loss = loss_dict['loss']
 
         # Log losses
         for loss_name, loss_value in loss_dict.items():
             self.log(f'train_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
-        # Log total loss
-        total_loss = loss_dict['loss']
-        self.train_loss = total_loss
-        
-        #if self.current_epoch % self.config['logging']['audio_log_every_n_epoch'] == 0:
-        #    self._log_audio(batch, signal, 'train')
+        # Log audio occasionally
+        if self.current_epoch % self.config['logging'].get('audio_log_every_n_epoch', 10) == 0 and batch_idx % 50 == 0:
+            self._log_audio(batch, signal, 'train')
 
         return total_loss
     
     def validation_step(self, batch, batch_idx):
-
         # Forward
-        signal, f0_pred, _, _,  =self(batch)
+        signal, f0_pred, _, _ = self(batch)
 
         # Compute Loss
         loss_dict = self.loss_fn(
@@ -106,26 +95,24 @@ class LightningModel(pl.LightningModule):
         for loss_name, loss_value in loss_dict.items():
             self.log(f'val_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
-        # Log total loss
+        # Extract total loss
         total_loss = loss_dict['loss']
-        self.val_loss = total_loss
         
-        self._log_audio(batch, signal, 'val')
+        # Log audio for first few batches
+        if batch_idx < 3:  # Limit to save space
+            self._log_audio(batch, signal, 'val')
 
         return total_loss
     
-    def _log_audio(self, batch, outputs, stage):
+    def _log_audio(self, batch, signal, stage):
         if not hasattr(self.logger, 'experiment'):
             return
         
         # Get sample rate from config
         sample_rate = self.config['model']['sample_rate']
         
-        # Extract signals from model outputs (signal, f0_pred, _, _)
-        signal = outputs[0] if isinstance(outputs, tuple) else outputs
-        
-        # Only log a few samples to avoid cluttering TensorBoard
-        num_samples = min(3, batch['audio'].size(0))
+        # Only log a limited number of samples
+        num_samples = min(2, batch['audio'].size(0))  # Reduced from 3 to 2 to save space
         
         for idx in range(num_samples):
             # Original audio
@@ -166,88 +153,57 @@ class LightningModel(pl.LightningModule):
 
     def _create_audio_waveform_figure(self, batch, signal, num_samples):
         """Create a figure comparing original and generated audio waveforms."""
+        # Create a more compact visualization
+        fig, axes = plt.subplots(num_samples, 2, figsize=(10, 3 * num_samples))
+        
         if num_samples == 1:
-            # When num_samples=1, create a 1x2 grid
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+            axes = [axes]  # Make it iterable for the loop
             
+        for idx in range(num_samples):
             # Original audio
-            audio_orig = batch['audio'][0].detach().cpu().numpy()
+            audio_orig = batch['audio'][idx].detach().cpu().numpy()
             # Generated audio
-            audio_gen = signal[0].detach().cpu().numpy()
+            audio_gen = signal[idx].detach().cpu().numpy()
             
-            # Plot original waveform
-            time_orig = np.arange(len(audio_orig)) / self.config['model']['sample_rate']
-            ax1.plot(time_orig, audio_orig)
-            ax1.set_title('Original Audio Waveform')
-            ax1.set_xlabel('Time (s)')
-            ax1.set_ylabel('Amplitude')
+            # Plot original waveform (use subsampling for efficiency)
+            subsample = max(1, len(audio_orig) // 1000)  # Limit plot points
+            time_orig = np.arange(0, len(audio_orig), subsample) / self.config['model']['sample_rate']
+            axes[idx][0].plot(time_orig, audio_orig[::subsample])
+            axes[idx][0].set_title('Original Audio')
+            axes[idx][0].set_xlabel('Time (s)')
             
             # Plot generated waveform
-            time_gen = np.arange(len(audio_gen)) / self.config['model']['sample_rate']
-            ax2.plot(time_gen, audio_gen)
-            ax2.set_title('Generated Audio Waveform')
-            ax2.set_xlabel('Time (s)')
-            ax2.set_ylabel('Amplitude')
-        else:
-            # When num_samples>1, create an nx2 grid
-            fig, axes = plt.subplots(num_samples, 2, figsize=(12, 4 * num_samples))
-            
-            for idx in range(num_samples):
-                # Original audio
-                audio_orig = batch['audio'][idx].detach().cpu().numpy()
-                # Generated audio
-                audio_gen = signal[idx].detach().cpu().numpy()
-                
-                # Plot original waveform
-                time_orig = np.arange(len(audio_orig)) / self.config['model']['sample_rate']
-                axes[idx, 0].plot(time_orig, audio_orig)
-                axes[idx, 0].set_title(f'Original Audio Waveform {idx}')
-                axes[idx, 0].set_xlabel('Time (s)')
-                axes[idx, 0].set_ylabel('Amplitude')
-                
-                # Plot generated waveform
-                time_gen = np.arange(len(audio_gen)) / self.config['model']['sample_rate']
-                axes[idx, 1].plot(time_gen, audio_gen)
-                axes[idx, 1].set_title(f'Generated Audio Waveform {idx}')
-                axes[idx, 1].set_xlabel('Time (s)')
-                axes[idx, 1].set_ylabel('Amplitude')
+            time_gen = np.arange(0, len(audio_gen), subsample) / self.config['model']['sample_rate']
+            axes[idx][1].plot(time_gen, audio_gen[::subsample])
+            axes[idx][1].set_title('Generated Audio')
+            axes[idx][1].set_xlabel('Time (s)')
         
         plt.tight_layout()
         return fig
-    def _log_samples(self, batch, outputs, stage):
-        if not hasattr(self.logger, 'experiment'):
-            return
-        
-        # Only log first sample in batch
-        idx = 0
-        
-        # Log original and reconstructed mel spectrograms
-        fig, ax = plt.subplots(2, 1, figsize=(10, 6))
-        
-        # Original mel
-        mel_orig = batch['mel'][idx].detach().cpu().numpy()
-        ax[0].imshow(mel_orig, origin='lower', aspect='auto')
-        ax[0].set_title('Original Mel Spectrogram')
-        ax[0].set_ylabel('Mel bins')
-        
-        # Reconstructed mel
-        mel_recon = outputs['mel_output'][idx].float().detach().cpu().numpy()
-        ax[1].imshow(mel_recon, origin='lower', aspect='auto')
-        ax[1].set_title('Reconstructed Mel Spectrogram')
-        ax[1].set_xlabel('Frames')
-        ax[1].set_ylabel('Mel bins')
-        
-        # Add to tensorboard
-        self.logger.experiment.add_figure(f'{stage}_mel_comparison', fig, self.global_step)
-        plt.close(fig)
     
     def configure_optimizers(self):
-        optimizer = AdamW(
-            self.parameters(),
-            lr=self.config['training']['learning_rate'],
-            weight_decay=self.config['training']['weight_decay']
-        )
+        # Create optimizer groups with different learning rates
+        core_params = []
+        expression_params = []
         
+        # Separate parameters for potentially different learning rates
+        for name, param in self.named_parameters():
+            if 'expression_predictor' in name:
+                expression_params.append(param)
+            else:
+                core_params.append(param)
+        
+        # Get learning rates from config
+        base_lr = self.config['training']['learning_rate']
+        expression_lr_factor = self.config['training'].get('expression_lr_factor', 1.5)
+        
+        # Create optimizer with parameter groups
+        optimizer = AdamW([
+            {'params': core_params, 'lr': base_lr},
+            {'params': expression_params, 'lr': base_lr * expression_lr_factor}
+        ], weight_decay=self.config['training']['weight_decay'])
+        
+        # Create learning rate scheduler
         scheduler = ExponentialLR(
             optimizer,
             gamma=self.config['training']['lr_scheduler']['gamma']
@@ -260,3 +216,19 @@ class LightningModel(pl.LightningModule):
                 'interval': 'epoch'
             }
         }
+    
+    def on_save_checkpoint(self, checkpoint):
+        """Custom saving logic to reduce checkpoint size"""
+        # Save a smaller version of the model for inference
+        if hasattr(self, 'model') and getattr(self, 'global_step', 0) % 1000 == 0:
+            save_path = os.path.join(
+                self.config['logging']['checkpoint_dir'], 
+                self.config['logging']['name'],
+                f'model_step_{self.global_step}.pt'
+            )
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
+            # Save only the model weights without optimizer state
+            torch.save(self.model.state_dict(), save_path)
+            
+        return checkpoint

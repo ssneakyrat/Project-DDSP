@@ -1,9 +1,9 @@
 dataset:
   batch_size: 8
-  num_workers: 2
+  num_workers: 4
   pin_memory: true
   persistent_workers: true
-  train_files: null  # Set to a number for development
+  train_files: 100 #null  # Set to a number for development
   val_files: 10 #null  # Set to a number for development
 
 model:
@@ -22,6 +22,7 @@ model:
   n_harmonics: 150
   n_formants: 4
   n_breath_bands: 8
+  use_gradient_checkpointing: false  # Enable to save memory
   
 loss:
   n_ffts: [1024, 512, 256, 128]
