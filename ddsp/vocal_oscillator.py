@@ -48,8 +48,8 @@ class VocalOscillator(nn.Module):
         
         Args:
             f0: B x T x 1 tensor with fundamental frequencies in Hz
-            vibrato_rate: B x 1 x 1 tensor with vibrato rates in Hz
-            vibrato_depth: B x 1 x 1 tensor with vibrato depth in semitones
+            vibrato_rate: B x T x 1 tensor with vibrato rates in Hz
+            vibrato_depth: B x T x 1 tensor with vibrato depth in semitones
             
         Returns:
             f0_vibrato: B x T x 1 tensor with modulated frequencies
@@ -58,7 +58,7 @@ class VocalOscillator(nn.Module):
         
         # Create time vector
         time = torch.arange(0, time_steps).to(f0.device) / self.fs
-        time = time.view(1, -1, 1).repeat(batch_size, 1, 1)
+        time = time.reshape(1, -1, 1).repeat(batch_size, 1, 1)
         
         # Apply sinusoidal vibrato
         # Convert semitones to multiplication factor: 2^(depth/12)
@@ -82,7 +82,7 @@ class VocalOscillator(nn.Module):
         
         Args:
             phase: B x T x n_harmonic tensor with phases for each harmonic
-            open_quotient: B x 1 x 1 tensor with open quotient (0.0-1.0)
+            open_quotient: B x T x 1 tensor with open quotient (0.0-1.0)
             
         Returns:
             flow: B x T x n_harmonic tensor with glottal flow waveforms
@@ -115,7 +115,7 @@ class VocalOscillator(nn.Module):
         
         Args:
             phases: B x T x n_harmonic tensor with phases
-            coherence_factor: B x 1 x 1 tensor with coherence factor (0.0-1.0)
+            coherence_factor: B x T x 1 tensor with coherence factor (0.0-1.0)
             
         Returns:
             modified_phases: B x T x n_harmonic tensor with adjusted phases
@@ -127,7 +127,7 @@ class VocalOscillator(nn.Module):
         # phase that would be coherent with fundamental
         if phases.size(2) > 1:
             harmonic_indices = torch.arange(1, phases.size(2)).to(phases.device)
-            harmonic_indices = harmonic_indices.view(1, 1, -1)
+            harmonic_indices = harmonic_indices.reshape(1, 1, -1)
             
             coherent_phases = fundamental_phase * harmonic_indices
             
@@ -151,9 +151,9 @@ class VocalOscillator(nn.Module):
         
         Args:
             signal: B x T tensor with input signal
-            formant_freqs: B x n_formants tensor with formant frequencies
-            formant_bandwidths: B x n_formants tensor with formant bandwidths
-            formant_gains: B x n_formants tensor with formant gains
+            formant_freqs: B x T x n_formants tensor with formant frequencies
+            formant_bandwidths: B x T x n_formants tensor with formant bandwidths
+            formant_gains: B x T x n_formants tensor with formant gains
             
         Returns:
             filtered_signal: B x T tensor with formant-filtered signal
@@ -167,17 +167,28 @@ class VocalOscillator(nn.Module):
         # Initialize frequency response
         freq_response = torch.zeros(batch_size, len(freqs)).to(signal.device)
         
+        # Extract formant parameters at middle frame (for simplicity)
+        mid_frame = formant_freqs.shape[1] // 2
+        formant_freqs_mid = formant_freqs[:, mid_frame, :]        # B x n_formants
+        formant_bandwidths_mid = formant_bandwidths[:, mid_frame, :]  # B x n_formants
+        formant_gains_mid = formant_gains[:, mid_frame, :]        # B x n_formants
+        
         # Calculate frequency response for each formant
-        for i in range(formant_freqs.size(1)):
-            for b in range(batch_size):
+        for b in range(batch_size):
+            for i in range(formant_freqs_mid.size(1)):
                 # Parameters for this formant
-                f0 = formant_freqs[b, i]
-                bw = formant_bandwidths[b, i]
-                gain = formant_gains[b, i]
+                f0 = formant_freqs_mid[b, i]
+                bw = formant_bandwidths_mid[b, i]
+                gain = formant_gains_mid[b, i]
                 
                 # Create resonance with second-order bandpass response
+                # Reshape freqs to allow broadcasting with scalar f0 and bw
+                freqs_reshaped = freqs.reshape(-1)
+                f0_reshaped = f0.reshape(1)
+                bw_reshaped = bw.reshape(1)
+                
                 response = gain * torch.pow(
-                    1.0 / (1.0 + torch.pow((freqs - f0) / (bw/2), 2)), 
+                    1.0 / (1.0 + torch.pow((freqs_reshaped - f0_reshaped) / (bw_reshaped/2), 2)), 
                     1.0
                 )
                 
@@ -198,7 +209,7 @@ class VocalOscillator(nn.Module):
         
         Args:
             shape: tuple with shape of noise to generate (B, T)
-            spectral_shape: B x n_bands tensor controlling spectral shape
+            spectral_shape: B x T x n_bands tensor controlling spectral shape
             
         Returns:
             breath_noise: B x T tensor with shaped noise
@@ -209,7 +220,11 @@ class VocalOscillator(nn.Module):
         noise = torch.randn(shape).to(spectral_shape.device)
         
         # Shape spectrum using simple filter bank
-        n_bands = spectral_shape.size(1)
+        # Extract spectral shape at middle frame (for simplicity)
+        mid_frame = spectral_shape.shape[1] // 2
+        spectral_shape_mid = spectral_shape[:, mid_frame, :]  # B x n_bands
+        
+        n_bands = spectral_shape_mid.size(1)
         bands_per_octave = 3
         min_freq = 80.0  # Hz
         
@@ -231,7 +246,7 @@ class VocalOscillator(nn.Module):
                 # Apply Gaussian shape for each band
                 freq_response = torch.exp(
                     -0.5 * ((freqs - center_freq) / bandwidth) ** 2
-                ) * spectral_shape[b, i]
+                ) * spectral_shape_mid[b, i]
                 
                 filter_response += freq_response
                 
@@ -256,15 +271,15 @@ class VocalOscillator(nn.Module):
         Args:
             f0: B x T x 1 (Hz)
             amplitudes: B x T x n_harmonic
-            vibrato_rate: B x 1 x 1 (Hz) or None
-            vibrato_depth: B x 1 x 1 (semitones) or None
-            formant_freqs: B x n_formants or None
-            formant_bandwidths: B x n_formants or None
-            formant_gains: B x n_formants or None
-            glottal_open_quotient: B x 1 x 1 or None
-            phase_coherence: B x 1 x 1 or None
-            breathiness: B x 1 x 1 or None
-            breath_spectral_shape: B x n_bands or None
+            vibrato_rate: B x T x 1 (Hz) or None
+            vibrato_depth: B x T x 1 (semitones) or None
+            formant_freqs: B x T x n_formants or None
+            formant_bandwidths: B x T x n_formants or None
+            formant_gains: B x T x n_formants or None
+            glottal_open_quotient: B x T x 1 or None
+            phase_coherence: B x T x 1 or None
+            breathiness: B x T x 1 or None
+            breath_spectral_shape: B x T x n_bands or None
             initial_phase: B x 1 x 1 or None
           
         Returns:
@@ -287,11 +302,11 @@ class VocalOscillator(nn.Module):
         # Formant parameters
         n_formants = self.default_formant_freqs.size(0)
         if formant_freqs is None:
-            formant_freqs = self.default_formant_freqs.view(1, n_formants).repeat(batch_size, 1).to(device)
+            formant_freqs = self.default_formant_freqs.reshape(1, 1, n_formants).repeat(batch_size, 1, 1).to(device)
         if formant_bandwidths is None:
-            formant_bandwidths = self.default_formant_bandwidths.view(1, n_formants).repeat(batch_size, 1).to(device)
+            formant_bandwidths = self.default_formant_bandwidths.reshape(1, 1, n_formants).repeat(batch_size, 1, 1).to(device)
         if formant_gains is None:
-            formant_gains = self.default_formant_gains.view(1, n_formants).repeat(batch_size, 1).to(device)
+            formant_gains = self.default_formant_gains.reshape(1, 1, n_formants).repeat(batch_size, 1, 1).to(device)
             
         # Glottal model parameters
         if glottal_open_quotient is None:
@@ -307,7 +322,7 @@ class VocalOscillator(nn.Module):
             n_bands = 8
             breath_spectral_shape = torch.pow(
                 0.7, 
-                torch.arange(n_bands).view(1, -1).repeat(batch_size, 1)
+                torch.arange(n_bands).reshape(1, 1, -1).repeat(batch_size, 1, 1)
             ).to(device)
         
         # Get voiced mask
@@ -322,7 +337,7 @@ class VocalOscillator(nn.Module):
         
         # Generate harmonic phases
         harmonic_indices = torch.arange(1, n_harmonic + 1).to(device)
-        phases = phase * harmonic_indices.view(1, 1, -1)
+        phases = phase * harmonic_indices.reshape(1, 1, -1)
         
         # 3. Apply phase coherence
         phases = self._apply_phase_coherence(phases, phase_coherence)
@@ -348,7 +363,7 @@ class VocalOscillator(nn.Module):
         )
         
         # Scale noise by breathiness
-        scaled_noise = breath_noise * breathiness.view(batch_size, 1)
+        scaled_noise = breath_noise * breathiness.squeeze(-1)
         
         # 8. Mix harmonic and noise components
         # Apply voiced mask to harmonic

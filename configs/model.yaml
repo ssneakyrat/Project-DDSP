@@ -1,6 +1,6 @@
 dataset:
   batch_size: 8
-  num_workers: 4
+  num_workers: 2
   pin_memory: true
   persistent_workers: true
   train_files: null  # Set to a number for development
@@ -20,7 +20,9 @@ model:
   n_mag_harmonic: 256
   n_mag_noise: 80
   n_harmonics: 150
-
+  n_formants: 4
+  n_breath_bands: 8
+  
 loss:
   n_ffts: [1024, 512, 256, 128]
   use_mel_loss: false
