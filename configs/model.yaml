@@ -26,7 +26,7 @@ model:
   
 loss:
   n_ffts: [1024, 512, 256, 128]
-  use_mel_loss: false
+  use_mel_loss: true
   mel_weight: 0.5  # Weight for mel spectrogram loss
   use_mss_loss: true
   use_f0_loss: true  

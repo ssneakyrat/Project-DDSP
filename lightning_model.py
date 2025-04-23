@@ -102,8 +102,9 @@ class LightningModel(pl.LightningModule):
         return total_loss
     
     def validation_step(self, batch, batch_idx):
+        # Standard precision forward
         signal, f0_pred, _, components = self(batch)
-            
+        
         # Extract harmonic amplitudes if amplitude loss is enabled
         amplitudes_pred = None
         if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
@@ -121,11 +122,15 @@ class LightningModel(pl.LightningModule):
         
         # Extract total loss
         total_loss = loss_dict['loss']
-
+        
         # Log losses
         for loss_name, loss_value in loss_dict.items():
             self.log(f'val_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
+        # Log audio for first few batches
+        if batch_idx < 3:  # Limit to save space
+            self._log_audio(batch, signal, 'val')
+
         return total_loss
     
     def _log_audio(self, batch, signal, stage):
