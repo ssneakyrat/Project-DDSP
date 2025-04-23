@@ -10,53 +10,26 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Ea
 from dataset import get_dataloader, SingingVoiceDataset
 from lightning_model import LightningModel
 
-def custom_collate(batch):
+def simplified_collate(batch):
+    """Simplified collate function that assumes all tensors are pre-padded."""
     # Filter out any None values
     batch = [x for x in batch if x is not None]
     if not batch:
         return None
-        
-    # Get elements and keys
-    elem = batch[0]
-    batch_dict = {key: [] for key in elem.keys()}
     
-    # Group by key
-    for sample in batch:
-        for key, value in sample.items():
-            batch_dict[key].append(value)
+    # Create dictionary for batched data
+    batch_dict = {}
     
-    # Special handling for tensors and strings
-    output_batch = {}
-    for key, values in batch_dict.items():
+    # Handle each key
+    for key in batch[0].keys():
         if key == 'filename':
-            # Handle non-tensor data
-            output_batch[key] = values
+            # For non-tensor data
+            batch_dict[key] = [sample[key] for sample in batch]
         else:
-            # Stack tensors with same shape, pad if needed
-            try:
-                output_batch[key] = torch.stack(values)
-            except:
-                # If stacking fails, pad to max length
-                if key in ['audio', 'phone_seq', 'phone_one_hot', 'f0', 'mel']:
-                    # Find max length in dimension 0
-                    max_len = max([v.size(0) for v in values])
-                    # Pad each tensor to max length
-                    padded_values = []
-                    for v in values:
-                        if v.size(0) < max_len:
-                            if v.dim() == 1:
-                                padding = torch.zeros(max_len - v.size(0), dtype=v.dtype)
-                            else:
-                                padding_shape = (max_len - v.size(0),) + v.size()[1:]
-                                padding = torch.zeros(padding_shape, dtype=v.dtype)
-                            v = torch.cat([v, padding])
-                        padded_values.append(v)
-                    output_batch[key] = torch.stack(padded_values)
-                else:
-                    # For other tensor types, just pass the list
-                    output_batch[key] = values
-                    
-    return output_batch
+            # For tensor data - simple stacking, no padding needed
+            batch_dict[key] = torch.stack([sample[key] for sample in batch])
+    
+    return batch_dict
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train singing voice model')
@@ -130,7 +103,7 @@ def main():
         num_workers=config['dataset']['num_workers'],
         pin_memory=config['dataset']['pin_memory'],
         persistent_workers=config['dataset']['persistent_workers'] if config['dataset']['num_workers'] > 0 else False,
-        collate_fn=custom_collate
+        collate_fn=simplified_collate
     )
     
     val_loader = torch.utils.data.DataLoader(
@@ -140,7 +113,7 @@ def main():
         num_workers=config['dataset']['num_workers'],
         pin_memory=config['dataset']['pin_memory'],
         persistent_workers=config['dataset']['persistent_workers'] if config['dataset']['num_workers'] > 0 else False,
-        collate_fn=custom_collate
+        collate_fn=simplified_collate
     )
     
     # Calculate len of phone map for model configuration
@@ -199,6 +172,7 @@ def main():
         log_every_n_steps=config['logging']['log_every_n_steps'],
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         check_val_every_n_epoch=config['logging']['check_val_every_n_epoch'],
+        num_sanity_val_steps=0
     )
     
     # Train model

@@ -541,7 +541,8 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_dir=DATASET_DIR, cache_dir=CACHE_DIR, sample_rate=SAMPLE_RATE,
                  context_window_samples=CONTEXT_WINDOW_SAMPLES, rebuild_cache=False, max_files=None,
                  n_mels=N_MELS, hop_length=HOP_LENGTH, win_length=WIN_LENGTH, fmin=FMIN, fmax=FMAX,
-                 num_workers=8, batch_size=32, device='cuda' if torch.cuda.is_available() else 'cpu'):
+                 num_workers=8, batch_size=32, device='cuda' if torch.cuda.is_available() else 'cpu',
+                 max_audio_length=None, max_mel_frames=None, n_harmonics=10):
         self.dataset_dir = dataset_dir
         self.cache_dir = cache_dir
         self.sample_rate = sample_rate
@@ -560,6 +561,10 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.batch_size = batch_size
         self.device = device
         
+        # NEW: Fixed padding lengths
+        self.max_audio_length = max_audio_length
+        self.max_mel_frames = max_mel_frames
+
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, f"singing_voice_multi_singer_data_{sample_rate}hz_{n_mels}mels.pkl")
         
@@ -570,6 +575,22 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
             self.save_cache(cache_path)
             self.generate_distribution_log()
     
+        # NEW: Calculate fixed lengths if not provided
+        if self.max_audio_length is None or self.max_mel_frames is None:
+            self._calculate_max_lengths()
+        
+    def _calculate_max_lengths(self):
+        """Calculate the maximum lengths for audio and mel frames from the dataset."""
+        if self.max_audio_length is None:
+            # Default to context window size or calculate from data
+            audio_lengths = [len(item['audio']) for item in self.data]
+            self.max_audio_length = max(audio_lengths) if audio_lengths else self.context_window_samples
+            
+        if self.max_mel_frames is None:
+            # Calculate from data or use expected size for context window
+            mel_frames = [item['mel'].shape[0] for item in self.data]
+            self.max_mel_frames = max(mel_frames) if mel_frames else (self.context_window_samples // self.hop_length + 1)
+
     def build_dataset_pipeline(self):
         """Build dataset using multi-stage pipeline approach."""
         logger.info("Building dataset using multi-stage pipeline...")
@@ -857,6 +878,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         
+        # Extract original tensors
         audio = torch.FloatTensor(item['audio'])
         phone_seq = torch.LongTensor(item['phone_seq'])                  # Aligned with audio
         phone_seq_mel = torch.LongTensor(item['phone_seq_mel'])          # Aligned with mel frames
@@ -866,8 +888,29 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         singer_id = torch.LongTensor([item['singer_id']])
         language_id = torch.LongTensor([item['language_id']])
         
-        # NEW: Load harmonic amplitudes
+        # Load harmonic amplitudes
         amplitudes = torch.FloatTensor(item['amplitudes'])
+        
+        # NEW: Pad tensors to fixed lengths
+        # 1. Pad audio-aligned tensors
+        audio_length = audio.size(0)
+        if audio_length < self.max_audio_length:
+            pad_length = self.max_audio_length - audio_length
+            audio = F.pad(audio, (0, pad_length))
+            phone_seq = F.pad(phone_seq, (0, pad_length))
+            f0_audio = F.pad(f0_audio, (0, pad_length))
+        
+        # 2. Pad mel-aligned tensors
+        mel_frames = mel.size(0)
+        if mel_frames < self.max_mel_frames:
+            pad_frames = self.max_mel_frames - mel_frames
+            # For 2D tensors (mel)
+            mel = F.pad(mel, (0, 0, 0, pad_frames))
+            # For 1D tensors
+            phone_seq_mel = F.pad(phone_seq_mel, (0, pad_frames))
+            f0 = F.pad(f0, (0, pad_frames))
+            # For 2D amplitudes
+            amplitudes = F.pad(amplitudes, (0, 0, 0, pad_frames))
         
         # Create one-hot encodings
         phone_one_hot = F.one_hot(phone_seq.long(), num_classes=len(self.phone_map)+1).float()
@@ -877,18 +920,18 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         
         return {
             'audio': audio,
-            'phone_seq': phone_seq,                    # Aligned with audio frames
-            'phone_seq_mel': phone_seq_mel,            # Aligned with mel frames
-            'phone_one_hot': phone_one_hot,            # Aligned with audio frames
-            'phone_mel_one_hot': phone_mel_one_hot,    # Aligned with mel frames
-            'f0': f0,                                  # Aligned with mel frames
-            'f0_audio': f0_audio,                      # Aligned with audio frames
-            'mel': mel,                                # Aligned with mel frames
+            'phone_seq': phone_seq,
+            'phone_seq_mel': phone_seq_mel,
+            'phone_one_hot': phone_one_hot,
+            'phone_mel_one_hot': phone_mel_one_hot,
+            'f0': f0,
+            'f0_audio': f0_audio,
+            'mel': mel,
             'singer_id': singer_id,
             'language_id': language_id,
             'singer_one_hot': singer_one_hot,
             'language_one_hot': language_one_hot,
-            'amplitudes': amplitudes,                  # NEW: Harmonic amplitudes aligned with mel frames
+            'amplitudes': amplitudes,
             'filename': item['filename']
         }
 
