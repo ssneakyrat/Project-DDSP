@@ -71,11 +71,23 @@ class LightningModel(pl.LightningModule):
                 total_loss = loss_dict['loss']
         else:
             # Standard precision forward
-            signal, f0_pred, _, _ = self(batch)
+            signal, f0_pred, _, components = self(batch)
+            
+            # Extract harmonic amplitudes if amplitude loss is enabled
+            amplitudes_pred = None
+            if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
+                # This is a placeholder - you would need to extract actual amplitudes
+                harmonic, _ = components
+                amplitudes_pred = None  # Replace with actual amplitudes extraction
             
             # Compute Loss
             loss_dict = self.loss_fn(
-                signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+                signal, batch['audio'], 
+                f0_pred, batch['f0'], 
+                mel_input=batch.get('mel', None),
+                amplitudes_pred=amplitudes_pred,
+                amplitudes_true=batch.get('amplitudes', None)
+            )
             
             # Extract total loss
             total_loss = loss_dict['loss']

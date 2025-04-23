@@ -83,10 +83,6 @@ class Synth(nn.Module):
         singer_id = batch['singer_id']
         language_id = batch['language_id']
         
-        print(phone_seq.shape)
-        print(f0_in.shape)
-        print(singer_id.shape)
-        print(language_id.shape)
         # Get synthesis parameters from SingVocoder
         core_params = self.sing_vocoder(phone_seq, f0_in, singer_id, language_id)
         
@@ -164,11 +160,8 @@ class Synth(nn.Module):
         Args:
             enabled: Bool, whether to enable checkpointing
         """
-        # Update the modules' checkpointing flags
-        if hasattr(self.mel2ctrl, 'use_checkpoint'):
-            self.mel2ctrl.use_checkpoint = enabled
-            
-        if hasattr(self.expression_predictor, 'use_checkpoint'):
-            self.expression_predictor.use_checkpoint = enabled
+        # Update the module's checkpointing flag
+        if hasattr(self.sing_vocoder, 'use_checkpoint'):
+            self.sing_vocoder.use_checkpoint = enabled
             
         return self

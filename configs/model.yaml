@@ -1,5 +1,5 @@
 dataset:
-  batch_size: 8
+  batch_size: 16
   num_workers: 4
   pin_memory: true
   persistent_workers: true
@@ -32,7 +32,7 @@ loss:
   use_f0_loss: true  
   use_amplitude_loss: true
   amplitude_weight: 0.1
-  
+
 training:
   learning_rate: 0.002
   weight_decay: 0.0001

@@ -53,20 +53,27 @@ class SelfAttention(nn.Module):
         residual = x
         
         # Compute query, key, value
-        qkv = self.qkv(x)
+        qkv = self.qkv(x)  # [b, 3*c, t]
+        
+        # Reshape: [b, 3*c, t] -> [b, 3, heads, head_dim, t]
         qkv = qkv.reshape(b, 3, self.heads, self.head_dim, t)
-        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
+        
+        # Split into q, k, v
+        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]  # Each has shape [b, heads, head_dim, t]
+        
+        # Transpose q and v for attention calculation
+        q = q.transpose(-2, -1)  # [b, heads, t, head_dim]
+        # No transpose for k as it's already in the correct shape [b, heads, head_dim, t]
+        v = v.transpose(-2, -1)  # [b, heads, t, head_dim]
         
         # Compute attention scores
-        q = q.transpose(-2, -1)  # b, heads, t, head_dim
-        k = k.permute(0, 1, 3, 2)  # b, heads, head_dim, t
-        v = v.transpose(-2, -1)  # b, heads, t, head_dim
-        
-        attn = torch.matmul(q, k) * self.scale
+        attn = torch.matmul(q, k) * self.scale  # [b, heads, t, t]
         attn = F.softmax(attn, dim=-1)
         
         # Apply attention
-        out = torch.matmul(attn, v)  # b, heads, t, head_dim
+        out = torch.matmul(attn, v)  # [b, heads, t, head_dim]
+        
+        # Reshape back to original format: [b, heads, t, head_dim] -> [b, c, t]
         out = out.transpose(2, 3).reshape(b, c, t)
         
         # Project and add residual
