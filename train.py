@@ -122,8 +122,7 @@ def main():
         precision=config['training']['precision'],
         log_every_n_steps=config['logging']['log_every_n_steps'],
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        check_val_every_n_epoch=config['logging']['check_val_every_n_epoch'],
-        num_sanity_val_steps=0
+        check_val_every_n_epoch=config['logging']['check_val_every_n_epoch']
     )
     
     # Train model - now with checkpoint support

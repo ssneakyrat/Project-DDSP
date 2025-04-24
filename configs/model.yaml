@@ -1,9 +1,9 @@
 dataset:
   batch_size: 16
-  num_workers: 8
-  pin_memory: false
+  num_workers: 1
+  pin_memory: true
   persistent_workers: true
-  train_files: 100  # Set to a number for development
+  train_files: null  # Set to a number for development
   val_files: 10 #null  # Set to a number for development
 
 model:
@@ -24,6 +24,13 @@ model:
   n_breath_bands: 8
   use_gradient_checkpointing: false  # Enable to save memory
   
+mel_guidance:
+  enabled: true
+  upper_threshold: 0.5  # Full guidance (0% masking) when loss >= this value
+  lower_threshold: 0.1  # Full masking (100%) when loss <= this value
+  warmup_epochs: 10     # Use full guidance for this many epochs initially
+  scheduler: "linear"   # How to transition between thresholds (linear or exponential)
+
 loss:
   n_ffts: [1024, 512, 256, 128]
   use_mel_loss: true
@@ -51,5 +58,5 @@ logging:
   save_top_k: 3
   monitor: "val_loss"
   mode: "min"
-  check_val_every_n_epoch: 1
-  audio_log_every_n_epoch: 1
+  check_val_every_n_epoch: 5
+  audio_log_every_n_epoch: 5

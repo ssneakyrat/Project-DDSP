@@ -35,7 +35,7 @@ class HybridLoss(nn.Module):
             # Ensure mel_weight is a float scalar, not a tensor
             self.mel_weight = float(mel_weight)  # Convert to Python float
 
-    def forward(self, y_pred, y_true, f0_pred, f0_true, mel_input=None, amplitudes_pred=None, amplitudes_true=None):
+    def forward(self, y_pred, y_true, f0_pred, f0_true, mel_input=None, signal_mel=None, amplitudes_pred=None, amplitudes_true=None):
         # Initialize loss components with default zero values
         loss_mss = torch.tensor(0.0, device=y_pred.device)
         loss_f0 = torch.tensor(0.0, device=y_pred.device)
@@ -54,7 +54,11 @@ class HybridLoss(nn.Module):
         
         if self.use_mel_loss and mel_input is not None:
             try:
-                loss_mel = self.mel_loss_func(y_pred, mel_input)
+                # Use pre-computed mel if available to avoid redundant computation
+                if signal_mel is not None:
+                    loss_mel = self.mel_loss_func.compare_mels(signal_mel, mel_input)
+                else:
+                    loss_mel = self.mel_loss_func(y_pred, mel_input)
                 
                 # Ensure loss_mel is a scalar
                 if loss_mel.numel() > 1:  # If it has more than one element
@@ -261,4 +265,32 @@ class MelSpectrogramLoss(nn.Module):
         loss = F.l1_loss(mel_from_audio, mel_input)
         
         # Ensure we return a scalar
+        return loss
+    
+    def compare_mels(self, signal_mel, target_mel):
+        """
+        Compare two mel spectrograms directly
+        
+        Args:
+            signal_mel: Mel spectrogram from signal [batch_size, n_mels, time_frames]
+            target_mel: Target mel spectrogram [batch_size, time_frames, n_mels] or [batch_size, n_mels, time_frames]
+        """
+        # First, make sure target_mel is in the right format [batch_size, n_mels, time_frames]
+        if target_mel.shape[-1] == signal_mel.shape[1]:
+            # Input is [batch, time, mels] but we need [batch, mels, time]
+            target_mel = target_mel.transpose(1, 2)
+        
+        # Ensure dimensions match by using interpolation if needed
+        if signal_mel.shape[-1] != target_mel.shape[-1]:
+            # Interpolate signal_mel to match target_mel's time dimension
+            signal_mel = F.interpolate(
+                signal_mel, 
+                size=target_mel.shape[-1],
+                mode='linear', 
+                align_corners=False
+            )
+        
+        # Compute L1 loss between mel spectrograms
+        loss = F.l1_loss(signal_mel, target_mel)
+        
         return loss

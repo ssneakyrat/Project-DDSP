@@ -52,38 +52,110 @@ class LightningModel(pl.LightningModule):
         # Initialize automatic mixed precision scaler if needed
         if self.use_mixed_precision:
             self.scaler = torch.cuda.amp.GradScaler()
+            
+        # Initialize mel loss tracking for guidance ratio
+        self.current_mel_loss = None
+        
+        # Get mel guidance settings from config
+        self.mel_guidance_enabled = config.get('mel_guidance', {}).get('enabled', False)
+        self.mel_guidance_upper = config.get('mel_guidance', {}).get('upper_threshold', 2.0)
+        self.mel_guidance_lower = config.get('mel_guidance', {}).get('lower_threshold', 0.5)
+        self.mel_guidance_warmup = config.get('mel_guidance', {}).get('warmup_epochs', 10)
+        self.mel_guidance_scheduler = config.get('mel_guidance', {}).get('scheduler', 'linear')
     
     def forward(self, batch):
-        return self.model(batch)
+        # Determine guidance ratio based on current mel loss
+        guidance_ratio = self._get_guidance_ratio()
+        
+        # Forward with calculated guidance ratio
+        return self.model(batch, guidance_ratio=guidance_ratio)
+    
+    def _get_guidance_ratio(self):
+        """Calculate the current guidance ratio based on mel loss and training progress"""
+        # Skip guidance if disabled
+        if not self.mel_guidance_enabled:
+            return 0.0
+            
+        # Always use full guidance during warmup period
+        if self.current_epoch < self.mel_guidance_warmup:
+            return 1.0
+            
+        # If no mel loss recorded yet, default to full guidance
+        if self.current_mel_loss is None:
+            return 1.0
+            
+        # Calculate guidance ratio based on current mel loss
+        upper = self.mel_guidance_upper
+        lower = self.mel_guidance_lower
+        
+        if self.current_mel_loss >= upper:
+            # Loss too high, use full guidance
+            guidance_ratio = 1.0
+        elif self.current_mel_loss <= lower:
+            # Loss low enough, use no guidance
+            guidance_ratio = 0.0
+        else:
+            # Linear interpolation between thresholds
+            guidance_ratio = (self.current_mel_loss - lower) / (upper - lower)
+            
+            # Apply non-linear scheduling if configured
+            if self.mel_guidance_scheduler == 'exponential':
+                # Exponential decay - faster reduction in guidance
+                guidance_ratio = guidance_ratio ** 2
+                
+        # Clamp to valid range
+        guidance_ratio = min(1.0, max(0.0, guidance_ratio))
+        
+        return guidance_ratio
     
     def training_step(self, batch, batch_idx):
+        # Get current guidance ratio
+        guidance_ratio = self._get_guidance_ratio()
+        
         # Use mixed precision where available for training
         if self.use_mixed_precision and not self.trainer.precision.startswith("bf16"):
             with torch.cuda.amp.autocast():
-                # Forward
-                signal, f0_pred, _, _ = self(batch)
+                # Forward with guidance ratio
+                signal, f0_pred, _, components = self.model(batch, guidance_ratio=guidance_ratio)
                 
-                # Compute Loss
+                # Extract pre-computed mel if available
+                signal_mel = components[3] if len(components) > 3 else None
+                
+                # Extract harmonic amplitudes if amplitude loss is enabled
+                amplitudes_pred = None
+                if self.loss_fn.use_amplitude_loss and len(components) > 2:
+                    _, _, amplitudes_pred = components[:3]
+                
+                # Compute Loss with pre-computed mel
                 loss_dict = self.loss_fn(
-                    signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+                    signal, batch['audio'], 
+                    f0_pred, batch['f0'], 
+                    mel_input=batch.get('mel', None),
+                    signal_mel=signal_mel,
+                    amplitudes_pred=amplitudes_pred,
+                    amplitudes_true=batch.get('amplitudes', None)
+                )
                 
                 # Extract total loss
                 total_loss = loss_dict['loss']
         else:
-            # Standard precision forward
-            signal, f0_pred, _, components = self(batch)
+            # Standard precision forward with guidance ratio
+            signal, f0_pred, _, components = self.model(batch, guidance_ratio=guidance_ratio)
+            
+            # Extract pre-computed mel if available
+            signal_mel = components[3] if len(components) > 3 else None
             
             # Extract harmonic amplitudes if amplitude loss is enabled
             amplitudes_pred = None
-            if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
-                # This is a placeholder - you would need to extract actual amplitudes
-                harmonic, noise, amplitudes_pred = components
+            if self.loss_fn.use_amplitude_loss and len(components) > 2:
+                _, _, amplitudes_pred = components[:3]
             
-            # Compute Loss
+            # Compute Loss with pre-computed mel
             loss_dict = self.loss_fn(
                 signal, batch['audio'], 
                 f0_pred, batch['f0'], 
                 mel_input=batch.get('mel', None),
+                signal_mel=signal_mel,
                 amplitudes_pred=amplitudes_pred,
                 amplitudes_true=batch.get('amplitudes', None)
             )
@@ -91,31 +163,41 @@ class LightningModel(pl.LightningModule):
             # Extract total loss
             total_loss = loss_dict['loss']
 
+        # Store current mel loss for next iteration
+        if 'loss_mel' in loss_dict:
+            self.current_mel_loss = loss_dict['loss_mel'].item()
+
         # Log losses
         for loss_name, loss_value in loss_dict.items():
             self.log(f'train_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
         
-        # Log audio occasionally
-        #if self.current_epoch % self.config['logging'].get('audio_log_every_n_epoch', 10) == 0 and batch_idx % 50 == 0:
-        #    self._log_audio(batch, signal, 'train')
-
+        # Log guidance ratio
+        self.log('guidance_ratio', guidance_ratio, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
+        
         return total_loss
     
     def validation_step(self, batch, batch_idx):
+        # For validation, always use a low guidance ratio to test true model performance
+        # Use 0.2 instead of 0 to provide minimal guidance during validation
+        guidance_ratio = 0.2
+        
         # Standard precision forward
-        signal, f0_pred, _, components = self(batch)
+        signal, f0_pred, _, components = self.model(batch, guidance_ratio=guidance_ratio)
+        
+        # Extract pre-computed mel if available
+        signal_mel = components[3] if len(components) > 3 else None
         
         # Extract harmonic amplitudes if amplitude loss is enabled
         amplitudes_pred = None
-        if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
-            # This is a placeholder - you would need to extract actual amplitudes
-            harmonic, noise, amplitudes_pred = components
+        if self.loss_fn.use_amplitude_loss and len(components) > 2:
+            _, _, amplitudes_pred = components[:3]
         
-        # Compute Loss
+        # Compute Loss with pre-computed mel
         loss_dict = self.loss_fn(
             signal, batch['audio'], 
             f0_pred, batch['f0'], 
             mel_input=batch.get('mel', None),
+            signal_mel=signal_mel,
             amplitudes_pred=amplitudes_pred,
             amplitudes_true=batch.get('amplitudes', None)
         )
@@ -133,103 +215,31 @@ class LightningModel(pl.LightningModule):
 
         return total_loss
     
-    def _log_audio(self, batch, signal, stage):
-        if not hasattr(self.logger, 'experiment'):
-            return
-        
-        # Get sample rate from config
-        sample_rate = self.config['model']['sample_rate']
-        
-        # Only log a limited number of samples
-        num_samples = min(2, batch['audio'].size(0))  # Reduced from 3 to 2 to save space
-        
-        for idx in range(num_samples):
-            # Original audio
-            audio_orig = batch['audio'][idx].detach().cpu().numpy()
-            
-            # Generated audio from model
-            audio_gen = signal[idx].detach().cpu().numpy()
-            
-            # Ensure audio is in the correct range for TensorBoard (-1 to 1)
-            max_orig = max(abs(audio_orig.min()), abs(audio_orig.max()))
-            max_gen = max(abs(audio_gen.min()), abs(audio_gen.max()))
-            
-            if max_orig > 0:
-                audio_orig = audio_orig / max_orig
-            if max_gen > 0:
-                audio_gen = audio_gen / max_gen
-            
-            # Log original audio
-            self.logger.experiment.add_audio(
-                f'{stage}_original_audio_{idx}',
-                audio_orig,
-                self.global_step,
-                sample_rate=sample_rate
-            )
-            
-            # Log generated audio
-            self.logger.experiment.add_audio(
-                f'{stage}_generated_audio_{idx}',
-                audio_gen,
-                self.global_step,
-                sample_rate=sample_rate
-            )
-        
-        # Create and log audio waveform visualization
-        fig = self._create_audio_waveform_figure(batch, signal, num_samples)
-        self.logger.experiment.add_figure(f'{stage}_audio_comparison', fig, self.global_step)
-        plt.close(fig)
-
-    def _create_audio_waveform_figure(self, batch, signal, num_samples):
-        """Create a figure comparing original and generated audio waveforms."""
-        # Create a more compact visualization
-        fig, axes = plt.subplots(num_samples, 2, figsize=(10, 3 * num_samples))
-        
-        if num_samples == 1:
-            axes = [axes]  # Make it iterable for the loop
-            
-        for idx in range(num_samples):
-            # Original audio
-            audio_orig = batch['audio'][idx].detach().cpu().numpy()
-            # Generated audio
-            audio_gen = signal[idx].detach().cpu().numpy()
-            
-            # Plot original waveform (use subsampling for efficiency)
-            subsample = max(1, len(audio_orig) // 1000)  # Limit plot points
-            time_orig = np.arange(0, len(audio_orig), subsample) / self.config['model']['sample_rate']
-            axes[idx][0].plot(time_orig, audio_orig[::subsample])
-            axes[idx][0].set_title('Original Audio')
-            axes[idx][0].set_xlabel('Time (s)')
-            
-            # Plot generated waveform
-            time_gen = np.arange(0, len(audio_gen), subsample) / self.config['model']['sample_rate']
-            axes[idx][1].plot(time_gen, audio_gen[::subsample])
-            axes[idx][1].set_title('Generated Audio')
-            axes[idx][1].set_xlabel('Time (s)')
-        
-        plt.tight_layout()
-        return fig
-    
     def configure_optimizers(self):
         # Create optimizer groups with different learning rates
         core_params = []
         expression_params = []
+        mel_refiner_params = []
         
         # Separate parameters for potentially different learning rates
         for name, param in self.named_parameters():
             if 'expression_predictor' in name:
                 expression_params.append(param)
+            elif 'mel_refiner' in name:
+                mel_refiner_params.append(param)
             else:
                 core_params.append(param)
         
         # Get learning rates from config
         base_lr = self.config['training']['learning_rate']
         expression_lr_factor = self.config['training'].get('expression_lr_factor', 1.5)
+        mel_refiner_lr_factor = self.config['training'].get('mel_refiner_lr_factor', 2.0)
         
         # Create optimizer with parameter groups
         optimizer = AdamW([
             {'params': core_params, 'lr': base_lr},
-            {'params': expression_params, 'lr': base_lr * expression_lr_factor}
+            {'params': expression_params, 'lr': base_lr * expression_lr_factor},
+            {'params': mel_refiner_params, 'lr': base_lr * mel_refiner_lr_factor}
         ], weight_decay=self.config['training']['weight_decay'])
         
         # Create learning rate scheduler
@@ -245,19 +255,3 @@ class LightningModel(pl.LightningModule):
                 'interval': 'epoch'
             }
         }
-    
-    def on_save_checkpoint(self, checkpoint):
-        """Custom saving logic to reduce checkpoint size"""
-        # Save a smaller version of the model for inference
-        if hasattr(self, 'model') and getattr(self, 'global_step', 0) % 1000 == 0:
-            save_path = os.path.join(
-                self.config['logging']['checkpoint_dir'], 
-                self.config['logging']['name'],
-                f'model_step_{self.global_step}.pt'
-            )
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            
-            # Save only the model weights without optimizer state
-            torch.save(self.model.state_dict(), save_path)
-            
-        return checkpoint
