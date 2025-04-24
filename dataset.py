@@ -1,9 +1,9 @@
 import os
 import torch
 import numpy as np
-import soundfile as sf  # Faster replacement for librosa.load
-import torch.multiprocessing as mp  # Use torch's multiprocessing for CUDA compatibility
-import torchaudio  # For GPU-accelerated audio processing
+import soundfile as sf
+import torch.multiprocessing as mp
+import torchaudio
 import pickle
 import glob
 from tqdm import tqdm
@@ -15,7 +15,8 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Any
-import parselmouth  # Faster F0 extraction than librosa.pyin
+import parselmouth
+import random
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SingingVoiceDataset")
 
-# Global constants (same as original)
+# Global constants
 DATASET_DIR = "./datasets"
 CACHE_DIR = "./cache"
 SAMPLE_RATE = 24000
@@ -261,11 +262,6 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
     """
     Process a batch of audio files on GPU for feature extraction.
     This runs in a single process to maximize GPU utilization.
-    
-    UPDATED: Now includes:
-    - phone_seq_mel: phones aligned with mel frames
-    - f0_audio: f0 aligned with audio frames
-    - amplitudes: harmonic amplitudes aligned with mel frames
     """
     results = []
     
@@ -304,7 +300,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
         f0 = extract_f0_parselmouth(audio, SAMPLE_RATE, hop_length)
         f0_tensor = torch.FloatTensor(f0).to(device)
         
-        # NEW: Extract harmonic amplitudes based on F0
+        # Extract harmonic amplitudes based on F0
         harmonic_amplitudes = extract_harmonic_amplitudes(
             audio,
             f0,
@@ -346,7 +342,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
             f0_len = min(len(f0), target_f0_length)
             f0_padded[:f0_len] = f0[:f0_len]
             
-            # NEW: Ensure consistent harmonic amplitudes length
+            # Ensure consistent harmonic amplitudes length
             amplitudes_padded = np.zeros((target_f0_length, n_harmonics))
             amplitudes_len = min(len(harmonic_amplitudes), target_f0_length)
             amplitudes_padded[:amplitudes_len] = harmonic_amplitudes[:amplitudes_len]
@@ -378,7 +374,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                 'f0': f0_padded,                  # Aligned with mel frames
                 'f0_audio': f0_audio,             # Aligned with audio frames
                 'mel': mel_np,                    # Aligned with mel frames
-                'amplitudes': amplitudes_padded,  # NEW: Harmonic amplitudes aligned with mel frames
+                'amplitudes': amplitudes_padded,  # Harmonic amplitudes aligned with mel frames
                 'singer_id': metadata.singer_idx,
                 'language_id': metadata.language_idx,
                 'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}"
@@ -408,7 +404,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     actual_f0_len = min(len(f0) - f0_start_idx, target_f0_length)
                     segment_f0[:actual_f0_len] = f0[f0_start_idx:f0_start_idx + actual_f0_len]
                 
-                # NEW: Extract harmonic amplitudes for this segment
+                # Extract harmonic amplitudes for this segment
                 amplitudes_start_idx = i // hop_length
                 amplitudes_end_idx = amplitudes_start_idx + target_f0_length
                 
@@ -452,7 +448,7 @@ def stage2_extract_features_batch(batch_data, hop_length, win_length, n_mels, fm
                     'f0': segment_f0,
                     'f0_audio': f0_audio,
                     'mel': segment_mel_np,
-                    'amplitudes': segment_amplitudes,  # NEW: Harmonic amplitudes aligned with mel frames
+                    'amplitudes': segment_amplitudes,
                     'singer_id': metadata.singer_idx,
                     'language_id': metadata.language_idx,
                     'filename': f"{metadata.singer_id}_{metadata.language_id}_{metadata.base_name}_{i}"
@@ -542,13 +538,27 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
                  context_window_samples=CONTEXT_WINDOW_SAMPLES, rebuild_cache=False, max_files=None,
                  n_mels=N_MELS, hop_length=HOP_LENGTH, win_length=WIN_LENGTH, fmin=FMIN, fmax=FMAX,
                  num_workers=8, batch_size=32, device='cuda' if torch.cuda.is_available() else 'cpu',
-                 max_audio_length=None, max_mel_frames=None, n_harmonics=10):
+                 max_audio_length=None, max_mel_frames=None, n_harmonics=10, 
+                 is_train=True, train_files=None, val_files=None, seed=42):
+        """
+        Initialize the SingingVoiceDataset.
+        
+        New parameters:
+        - is_train: Whether this is a training dataset (True) or validation dataset (False)
+        - train_files: Number of files to use for training (if None, use all available except validation files)
+        - val_files: Number of files to use for validation (if None, use all available except training files)
+        - seed: Random seed for reproducible file selection
+        """
         self.dataset_dir = dataset_dir
         self.cache_dir = cache_dir
         self.sample_rate = sample_rate
         self.context_window_samples = context_window_samples
         self.max_files = max_files
         self.n_harmonics = n_harmonics
+        self.is_train = is_train
+        self.train_files = train_files
+        self.val_files = val_files
+        self.seed = seed
 
         # Parameters for mel spectrogram extraction
         self.n_mels = n_mels
@@ -562,21 +572,29 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.batch_size = batch_size
         self.device = device
         
-        # NEW: Fixed padding lengths
+        # Fixed padding lengths
         self.max_audio_length = max_audio_length
         self.max_mel_frames = max_mel_frames
 
         os.makedirs(cache_dir, exist_ok=True)
-        cache_path = os.path.join(cache_dir, f"singing_voice_multi_singer_data_{sample_rate}hz_{n_mels}mels.pkl")
+        
+        # Create separate cache files for training and validation
+        dataset_type = "train" if self.is_train else "val"
+        cache_path = os.path.join(
+            cache_dir, 
+            f"singing_voice_{dataset_type}_data_{sample_rate}hz_{n_mels}mels.pkl"
+        )
+        
+        logger.info(f"Initializing {'training' if is_train else 'validation'} dataset")
         
         if os.path.exists(cache_path) and not rebuild_cache:
             self.load_cache(cache_path)
         else:
             self.build_dataset_pipeline()
             self.save_cache(cache_path)
-            self.generate_distribution_log()
+            self.generate_distribution_log(dataset_type)
     
-        # NEW: Calculate fixed lengths if not provided
+        # Calculate fixed lengths if not provided
         if self.max_audio_length is None or self.max_mel_frames is None:
             self._calculate_max_lengths()
         
@@ -594,14 +612,62 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
 
     def build_dataset_pipeline(self):
         """Build dataset using multi-stage pipeline approach."""
-        logger.info("Building dataset using multi-stage pipeline...")
+        logger.info(f"Building {'training' if self.is_train else 'validation'} dataset using multi-stage pipeline...")
         
         # Stage 1: Scan directory and collect metadata
         self.scan_dataset_structure()
         
         # Create file processing tasks
-        processing_tasks = self.create_processing_tasks()
+        all_tasks = self.create_processing_tasks()
         
+        # Set random seed for reproducible file selection
+        random.seed(self.seed)
+        
+        # Shuffle all tasks
+        random.shuffle(all_tasks)
+        
+        # Select files for training and validation based on counts
+        total_files = len(all_tasks)
+        
+        if self.is_train:
+            # For training dataset
+            if self.train_files is not None:
+                # Use specified number of training files
+                file_count = min(self.train_files, total_files)
+                if self.val_files is not None:
+                    # Ensure we don't overlap with validation files
+                    file_count = min(file_count, total_files - self.val_files)
+                
+                processing_tasks = all_tasks[:file_count]
+                logger.info(f"Selected {len(processing_tasks)} files for training out of {total_files} total files")
+            else:
+                # Use all available files for training (except validation files if specified)
+                if self.val_files is not None:
+                    val_count = min(self.val_files, total_files)
+                    processing_tasks = all_tasks[val_count:]
+                    logger.info(f"Using {len(processing_tasks)} files for training (reserved {val_count} for validation)")
+                else:
+                    processing_tasks = all_tasks
+                    logger.info(f"Using all {len(processing_tasks)} files for training")
+        else:
+            # For validation dataset
+            if self.val_files is not None:
+                # Use specified number of validation files
+                file_count = min(self.val_files, total_files)
+                processing_tasks = all_tasks[:file_count]
+                logger.info(f"Selected {len(processing_tasks)} files for validation out of {total_files} total files")
+            else:
+                # Default validation behavior - use a small portion if train_files is specified
+                if self.train_files is not None:
+                    train_count = min(self.train_files, total_files)
+                    processing_tasks = all_tasks[train_count:]
+                    logger.info(f"Using {len(processing_tasks)} files for validation (reserved {train_count} for training)")
+                else:
+                    # Use all files for validation if nothing is specified
+                    processing_tasks = all_tasks
+                    logger.info(f"Using all {len(processing_tasks)} files for validation")
+        
+        # Apply max_files limit if specified
         if self.max_files and self.max_files < len(processing_tasks):
             logger.info(f"Limiting dataset to {self.max_files} files out of {len(processing_tasks)}")
             processing_tasks = processing_tasks[:self.max_files]
@@ -763,10 +829,9 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
     def run_stage1_preprocessing(self, tasks):
         """Run Stage 1: Multiprocessing for file loading and initial processing."""
         # Process files in parallel
-        print( 'num worker', self.num_workers)
         max_workers = self.num_workers if self.num_workers > 0 else min(32, os.cpu_count() + 4)
         
-        logger.info(f"Stage 1: Processing files with {max_workers} workers")
+        logger.info(f"Stage 1: Processing {len(tasks)} files with {max_workers} workers")
         
         # Prepare args for multiprocessing - must be picklable
         mp_args = [(task, self.phone_map, self.sample_rate) for task in tasks]
@@ -786,6 +851,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         return valid_results
     
     def save_cache(self, cache_path):
+        """Save dataset to cache file."""
         cache_data = {
             'data': self.data,
             'phone_map': self.phone_map,
@@ -797,16 +863,21 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
             'singer_language_stats': self.singer_language_stats,
             'singer_duration': self.singer_duration,
             'language_duration': self.language_duration,
-            'phone_language_stats': self.phone_language_stats
+            'phone_language_stats': self.phone_language_stats,
+            'is_train': self.is_train,
+            'max_audio_length': self.max_audio_length,
+            'max_mel_frames': self.max_mel_frames
         }
         with open(cache_path, 'wb') as f:
             pickle.dump(cache_data, f)
         logger.info(f"Dataset cached to {cache_path}")
     
     def load_cache(self, cache_path):
-        logger.info(f"Loading dataset from cache: {cache_path}")
+        """Load dataset from cache file."""
+        logger.info(f"Loading {'training' if self.is_train else 'validation'} dataset from cache: {cache_path}")
         with open(cache_path, 'rb') as f:
             cache_data = pickle.load(f)
+        
         self.data = cache_data['data']
         self.phone_map = cache_data['phone_map']
         self.inv_phone_map = cache_data['inv_phone_map']
@@ -821,15 +892,22 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.language_duration = cache_data.get('language_duration', {})
         self.phone_language_stats = cache_data.get('phone_language_stats', {})
         
+        # Load max dimensions if available
+        if 'max_audio_length' in cache_data and self.max_audio_length is None:
+            self.max_audio_length = cache_data['max_audio_length']
+        
+        if 'max_mel_frames' in cache_data and self.max_mel_frames is None:
+            self.max_mel_frames = cache_data['max_mel_frames']
+        
         logger.info(f"Loaded {len(self.data)} segments with {len(self.singer_map)} singers, "
                   f"{len(self.language_map)} languages, and {len(self.phone_map)} unique phones")
     
-    def generate_distribution_log(self):
+    def generate_distribution_log(self, dataset_type="dataset"):
         """Generate a log file with dataset distribution statistics."""
-        log_path = os.path.join(self.cache_dir, "dataset_distribution.txt")
+        log_path = os.path.join(self.cache_dir, f"{dataset_type}_distribution.txt")
         
         with open(log_path, 'w') as f:
-            f.write("=== SINGING VOICE DATASET DISTRIBUTION ===\n\n")
+            f.write(f"=== SINGING VOICE {dataset_type.upper()} DISTRIBUTION ===\n\n")
             
             # Overall statistics
             f.write(f"Total segments: {len(self.data)}\n")
@@ -952,22 +1030,31 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         }
 
 def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_workers=True, 
-                 max_files=None, device='cuda', collate_fn=None, shuffle=True, n_harmonics=10):
+                  train_files=None, val_files=None, device='cuda', collate_fn=None, 
+                  n_harmonics=10, seed=42, create_val=True):
     """
-    Get a dataloader for the singing voice dataset.
+    Get dataloaders for the singing voice dataset.
     
     Args:
         batch_size: Number of samples per batch
         num_workers: Number of workers for the DataLoader
         pin_memory: Whether to pin memory in DataLoader
         persistent_workers: Whether to keep workers alive between epochs
-        max_files: Maximum number of files to process
+        train_files: Number of files to use for training (if None, use all except validation)
+        val_files: Number of files to use for validation (if None, use all except training)
         device: Device to use for GPU acceleration ('cuda' or 'cpu')
-        n_harmonics: Number of harmonics to extract (NEW)
+        collate_fn: Custom collate function
+        n_harmonics: Number of harmonics to extract
+        seed: Random seed for reproducible file selection
+        create_val: Whether to create a validation dataloader
+        
+    Returns:
+        If create_val=True: (train_loader, val_loader, train_dataset, val_dataset)
+        If create_val=False: (train_loader, train_dataset)
     """
-    dataset = SingingVoiceDataset(
-        rebuild_cache=False, 
-        max_files=max_files,
+    logger.info("Creating training dataset...")
+    train_dataset = SingingVoiceDataset(
+        rebuild_cache=False,
         n_mels=N_MELS,
         hop_length=HOP_LENGTH,
         win_length=WIN_LENGTH,
@@ -975,34 +1062,77 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         fmax=FMAX,
         num_workers=num_workers,
         device=device,
-        n_harmonics=n_harmonics,  # NEW: Pass n_harmonics parameter
+        n_harmonics=n_harmonics,
+        is_train=True,
+        train_files=train_files,
+        val_files=val_files,
+        seed=seed
     )
     
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=persistent_workers if num_workers > 0 else False,
         collate_fn=collate_fn
     )
-    return dataloader, dataset
+    
+    if create_val:
+        logger.info("Creating validation dataset...")
+        val_dataset = SingingVoiceDataset(
+            rebuild_cache=False,
+            n_mels=N_MELS,
+            hop_length=HOP_LENGTH,
+            win_length=WIN_LENGTH,
+            fmin=FMIN,
+            fmax=FMAX,
+            num_workers=num_workers,
+            device=device,
+            n_harmonics=n_harmonics,
+            is_train=False,
+            train_files=train_files,
+            val_files=val_files,
+            seed=seed
+        )
+        
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
+            collate_fn=collate_fn
+        )
+        
+        return train_loader, val_loader, train_dataset, val_dataset
+    else:
+        return train_loader, train_dataset
 
 if __name__ == "__main__":
     # Example usage
-    loader, dataset = get_dataloader(
+    train_loader, val_loader, train_dataset, val_dataset = get_dataloader(
         batch_size=16, 
         num_workers=4,
-        max_files=100  # Limit for testing
+        train_files=90,  # Use 90 files for training
+        val_files=10     # Use 10 files for validation
     )
     
     # Print dataset stats
-    print(f"Dataset size: {len(dataset)}")
+    print(f"Training dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
     
     # Benchmark loading time
     start_time = time.time()
-    for i, batch in enumerate(tqdm(loader, desc="Loading batches")):
-        if i > 10:  # Load a few batches for benchmark
+    for i, batch in enumerate(tqdm(train_loader, desc="Loading training batches")):
+        if i > 5:  # Load a few batches for benchmark
             break
-    print(f"Time to load 10 batches: {time.time() - start_time:.2f} seconds")
+    print(f"Time to load 5 training batches: {time.time() - start_time:.2f} seconds")
+    
+    start_time = time.time()
+    for i, batch in enumerate(tqdm(val_loader, desc="Loading validation batches")):
+        if i > 5:  # Load a few batches for benchmark
+            break
+    print(f"Time to load 5 validation batches: {time.time() - start_time:.2f} seconds")

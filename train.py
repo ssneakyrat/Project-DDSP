@@ -7,7 +7,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 
-from dataset import get_dataloader, SingingVoiceDataset
+from dataset import get_dataloader 
 from lightning_model import LightningModel
 
 def simplified_collate(batch):
@@ -29,15 +29,12 @@ def simplified_collate(batch):
             # Check if all tensors have the same shape
             shapes = [sample[key].shape for sample in batch]
             if len(set(str(s) for s in shapes)) > 1:
-                #print(f"WARNING: Inconsistent shapes for {key}: {shapes}")
-                
                 # For handling different dimensions
                 if key in ['audio', 'phone_seq', 'f0_audio']:
                     # Audio-aligned tensors should be 1D with length 48000
                     target_size = 48000
                     for i, sample in enumerate(batch):
                         if sample[key].shape[0] != target_size:
-                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape[0]} to {target_size}")
                             if sample[key].shape[0] < target_size:
                                 # Pad
                                 batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
@@ -50,7 +47,6 @@ def simplified_collate(batch):
                     target_size = 201  # 48000 // 240 + 1 (for 2-second audio with hop_length=240)
                     for i, sample in enumerate(batch):
                         if sample[key].shape[0] != target_size:
-                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape[0]} to {target_size}")
                             if sample[key].shape[0] < target_size:
                                 # Pad
                                 batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
@@ -65,7 +61,6 @@ def simplified_collate(batch):
                     
                     for i, sample in enumerate(batch):
                         if sample[key].shape[0] != target_frames:
-                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_frames}, {n_mels}]")
                             if sample[key].shape[0] < target_frames:
                                 # Pad
                                 batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
@@ -80,7 +75,6 @@ def simplified_collate(batch):
                     
                     for i, sample in enumerate(batch):
                         if sample[key].shape[0] != target_frames:
-                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_frames}, {n_harmonics}]")
                             if sample[key].shape[0] < target_frames:
                                 # Pad
                                 batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
@@ -103,24 +97,12 @@ def simplified_collate(batch):
                     
                     for i, sample in enumerate(batch):
                         if sample[key].shape[0] != target_length:
-                            #print(f"  Resizing {key} tensor {i} from {sample[key].shape} to [{target_length}, {n_classes}]")
                             if sample[key].shape[0] < target_length:
                                 # Pad
                                 batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_length - sample[key].shape[0]))
                             else:
                                 # Truncate
                                 batch[i][key] = sample[key][:target_length, :]
-                
-                # For other tensors like singer_id, language_id, etc.
-                # These should already be consistent, but just in case:
-                '''
-                else:
-                    most_common_shape = max(shapes, key=shapes.count)
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape != most_common_shape:
-                            #print(f"  Unexpected shape mismatch for {key}: {sample[key].shape} vs {most_common_shape}")
-                            # You could implement reshaping here if needed
-                '''
             
             try:
                 # Stack the tensors after ensuring consistent shapes
@@ -136,13 +118,10 @@ def parse_args():
     parser.add_argument('--config', type=str, default='configs/model.yaml', help='Path to config file')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint for resuming')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--val_ratio', type=float, default=0.02, help='Validation data ratio')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for train/val split')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     return parser.parse_args()
 
 def main():
-    #torch.set_float32_matmul_precision('medium')
-
     args = parse_args()
     
     # Load config
@@ -151,80 +130,50 @@ def main():
     
     # Modify config for debug mode
     if args.debug:
-        config['dataset']['max_files'] = 10
+        config['dataset']['train_files'] = 5
+        config['dataset']['val_files'] = 2
         config['training']['epochs'] = 3
     
     # Set random seed for reproducibility
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     
-    print("Loading full dataset...")
+    print("Creating separate train and validation datasets...")
     
-    # Load the full dataset once
-    full_dataset = SingingVoiceDataset(
-        rebuild_cache=False, 
-        max_files=config['dataset']['max_files'] if 'max_files' in config['dataset'] else None,
-        n_mels=config['dataset'].get('n_mels', 80),
-        hop_length=config['dataset'].get('hop_length', 240),
-        win_length=config['dataset'].get('win_length', 1024),
-        fmin=config['dataset'].get('fmin', 40),
-        fmax=config['dataset'].get('fmax', 12000),
+    # Create separate train and validation dataloaders
+    train_loader, val_loader, train_dataset, val_dataset = get_dataloader(
+        batch_size=config['dataset']['batch_size'],
         num_workers=config['dataset']['num_workers'],
+        pin_memory=config['dataset']['pin_memory'],
+        persistent_workers=config['dataset']['persistent_workers'],
+        train_files=config['dataset'].get('train_files', None),
+        val_files=config['dataset'].get('val_files', None),
         device='cuda' if torch.cuda.is_available() else 'cpu',
+        collate_fn=simplified_collate,
         n_harmonics=config['model']['n_harmonics'],
+        seed=args.seed
     )
     
-    # Calculate train/val split sizes
-    full_dataset_size = len(full_dataset)
-    val_size = int(full_dataset_size * args.val_ratio)
-    train_size = full_dataset_size - val_size
+    print(f"Training dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
     
-    print(f"Full dataset size: {full_dataset_size}")
-    print(f"Train set size: {train_size}")
-    print(f"Validation set size: {val_size}")
-    
-    # Create indices for train/val split
-    indices = list(range(full_dataset_size))
-    # Shuffle indices using the set seed
-    indices = torch.randperm(full_dataset_size).tolist()
-    
-    # Split indices for train and validation
-    train_indices = indices[val_size:]
-    val_indices = indices[:val_size]
-    
-    # Create samplers for train and validation
-    train_sampler = torch.utils.data.SubsetRandomSampler(train_indices)
-    val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
-    
-    # Create data loaders with the samplers
-    train_loader = torch.utils.data.DataLoader(
-        full_dataset,
-        batch_size=config['dataset']['batch_size'],
-        sampler=train_sampler,
-        num_workers=config['dataset']['num_workers'],
-        pin_memory=config['dataset']['pin_memory'],
-        persistent_workers=config['dataset']['persistent_workers'] if config['dataset']['num_workers'] > 0 else False,
-        collate_fn=simplified_collate
-    )
-    
-    val_loader = torch.utils.data.DataLoader(
-        full_dataset,  # Use the same dataset
-        batch_size=config['dataset']['batch_size'],
-        sampler=val_sampler,
-        num_workers=config['dataset']['num_workers'],
-        pin_memory=config['dataset']['pin_memory'],
-        persistent_workers=config['dataset']['persistent_workers'] if config['dataset']['num_workers'] > 0 else False,
-        collate_fn=simplified_collate
-    )
-    
-    # Calculate len of phone map for model configuration
-    phone_map_len = len(full_dataset.phone_map) + 1  # +1 for padding
-    singer_map_len = len(full_dataset.singer_map)
-    language_map_len = len(full_dataset.language_map)
+    # Calculate len of phone map for model configuration (use train dataset for this)
+    phone_map_len = len(train_dataset.phone_map) + 1  # +1 for padding
+    singer_map_len = len(train_dataset.singer_map)
+    language_map_len = len(train_dataset.language_map)
     
     print(f"Phone map length: {phone_map_len}")
     print(f"Singer map length: {singer_map_len}")
     print(f"Language map length: {language_map_len}")
+    
+    # Verify that train and validation datasets have compatible maps
+    if (len(train_dataset.phone_map) != len(val_dataset.phone_map) or 
+        len(train_dataset.singer_map) != len(val_dataset.singer_map) or
+        len(train_dataset.language_map) != len(val_dataset.language_map)):
+        print("WARNING: Train and validation datasets have different map sizes!")
+        print(f"Train phone map: {len(train_dataset.phone_map)}, Val phone map: {len(val_dataset.phone_map)}")
+        print(f"Train singer map: {len(train_dataset.singer_map)}, Val singer map: {len(val_dataset.singer_map)}")
+        print(f"Train language map: {len(train_dataset.language_map)}, Val language map: {len(val_dataset.language_map)}")
     
     # Create model
     model = LightningModel(

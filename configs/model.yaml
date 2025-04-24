@@ -3,7 +3,7 @@ dataset:
   num_workers: 8
   pin_memory: false
   persistent_workers: true
-  train_files: null  # Set to a number for development
+  train_files: 100  # Set to a number for development
   val_files: 10 #null  # Set to a number for development
 
 model:
@@ -51,5 +51,5 @@ logging:
   save_top_k: 3
   monitor: "val_loss"
   mode: "min"
-  check_val_every_n_epoch: 5
-  audio_log_every_n_epoch: 5
+  check_val_every_n_epoch: 1
+  audio_log_every_n_epoch: 1
