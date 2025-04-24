@@ -362,15 +362,16 @@ def stage3_post_process(processed_features):
 
 class SingingVoiceDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_dir=DATASET_DIR, cache_dir=CACHE_DIR, sample_rate=SAMPLE_RATE,
-                 rebuild_cache=False, max_files=None,
-                 n_mels=N_MELS, hop_length=HOP_LENGTH, win_length=WIN_LENGTH, fmin=FMIN, fmax=FMAX,
-                 num_workers=8, batch_size=32, device='cuda' if torch.cuda.is_available() else 'cpu',
-                 n_harmonics=10, 
-                 is_train=True, train_files=None, val_files=None, seed=42):
+             rebuild_cache=False, max_files=None,
+             n_mels=N_MELS, hop_length=HOP_LENGTH, win_length=WIN_LENGTH, fmin=FMIN, fmax=FMAX,
+             num_workers=8, batch_size=32, device='cuda' if torch.cuda.is_available() else 'cpu',
+             n_harmonics=10, context_window_sec=None,
+             is_train=True, train_files=None, val_files=None, seed=42):
         """
         Initialize the SingingVoiceDataset.
         
         New parameters:
+        - context_window_sec: Context window size in seconds, used for chunking audio
         - is_train: Whether this is a training dataset (True) or validation dataset (False)
         - train_files: Number of files to use for training (if None, use all available except validation files)
         - val_files: Number of files to use for validation (if None, use all available except training files)
@@ -387,6 +388,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.seed = seed
         self.hop_length = hop_length
         self.win_length = win_length
+        self.context_window_sec = context_window_sec  # New parameter
 
         # Parameters for mel spectrogram extraction
         self.n_mels = n_mels
@@ -428,7 +430,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         
         # Estimate max audio length and mel frames
         self.max_audio_length, self.max_mel_frames = estimate_max_lengths(
-            all_tasks, self.sample_rate, self.hop_length, max_files=100
+            all_tasks, self.sample_rate, self.hop_length, max_files=100, context_window_sec=self.context_window_sec
         )
         
         # Set random seed for reproducible file selection
@@ -707,7 +709,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
 
 def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_workers=True, 
                   train_files=None, val_files=None, device='cuda', collate_fn=None, 
-                  n_harmonics=10, seed=42, create_val=True):
+                  n_harmonics=10, context_window_sec=None, seed=42, create_val=True):
     """
     Get dataloaders for the singing voice dataset.
     
@@ -721,6 +723,7 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         device: Device to use for GPU acceleration ('cuda' or 'cpu')
         collate_fn: Custom collate function (if None, use the standardized one)
         n_harmonics: Number of harmonics to extract
+        context_window_sec: Context window size in seconds, used for chunking audio
         seed: Random seed for reproducible file selection
         create_val: Whether to create a validation dataloader
         
@@ -743,6 +746,7 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
         num_workers=num_workers,
         device=device,
         n_harmonics=n_harmonics,
+        context_window_sec=context_window_sec,  # Pass context window parameter
         is_train=True,
         train_files=train_files,
         val_files=val_files,
@@ -771,6 +775,7 @@ def get_dataloader(batch_size=16, num_workers=4, pin_memory=True, persistent_wor
             num_workers=num_workers,
             device=device,
             n_harmonics=n_harmonics,
+            context_window_sec=context_window_sec,  # Pass context window parameter
             is_train=False,
             train_files=train_files,
             val_files=val_files,

@@ -299,7 +299,7 @@ def create_file_tasks(dataset_dir, singer_map, language_map):
     logger.info(f"Created {len(tasks)} processing tasks")
     return tasks
 
-def estimate_max_lengths(file_tasks, sample_rate, hop_length, max_files=100):
+def estimate_max_lengths(file_tasks, sample_rate, hop_length, max_files=100, context_window_sec=None):
     """
     Estimate the maximum audio length and mel frames by scanning a subset of files.
     
@@ -308,6 +308,8 @@ def estimate_max_lengths(file_tasks, sample_rate, hop_length, max_files=100):
         sample_rate (int): Sample rate of audio
         hop_length (int): Hop length for mel spectrogram
         max_files (int): Maximum number of files to scan
+        context_window_sec (float, optional): Context window size in seconds. If provided, 
+                                              will be used instead of the default 5 seconds.
         
     Returns:
         tuple: (max_audio_length, max_mel_frames)
@@ -336,18 +338,30 @@ def estimate_max_lengths(file_tasks, sample_rate, hop_length, max_files=100):
     # Calculate max mel frames from max audio length
     max_mel_frames = max_audio_length // hop_length + 1
     
-    # Define a standard chunk size (e.g., 5 seconds)
-    import math
-    chunk_size_sec = 5  # Use 5-second chunks
-    chunk_size_samples = sample_rate * chunk_size_sec
-    
-    # Use chunk size if it's smaller than max detected, otherwise use the max
-    if chunk_size_samples < max_audio_length:
-        max_audio_length = chunk_size_samples
-        max_mel_frames = max_audio_length // hop_length + 1
-        logger.info(f"Using standard chunk size: {max_audio_length} samples ({chunk_size_sec} seconds)")
+    # Use context window size if provided
+    if context_window_sec is not None:
+        chunk_size_samples = int(sample_rate * context_window_sec)
+        
+        # Use context window size if it's smaller than max detected, otherwise use the max
+        if chunk_size_samples < max_audio_length:
+            max_audio_length = chunk_size_samples
+            max_mel_frames = max_audio_length // hop_length + 1
+            logger.info(f"Using context window size: {max_audio_length} samples ({context_window_sec} seconds)")
+        else:
+            logger.info(f"Using detected max length: {max_audio_length} samples ({max_audio_length/sample_rate:.2f} seconds)")
     else:
-        logger.info(f"Using detected max length: {max_audio_length} samples ({max_audio_length/sample_rate:.2f} seconds)")
+        # Define a standard chunk size if context_window_sec is not provided
+        import math
+        chunk_size_sec = 5  # Default to 5-second chunks if not specified
+        chunk_size_samples = sample_rate * chunk_size_sec
+        
+        # Use chunk size if it's smaller than max detected, otherwise use the max
+        if chunk_size_samples < max_audio_length:
+            max_audio_length = chunk_size_samples
+            max_mel_frames = max_audio_length // hop_length + 1
+            logger.info(f"Using standard chunk size: {max_audio_length} samples ({chunk_size_sec} seconds)")
+        else:
+            logger.info(f"Using detected max length: {max_audio_length} samples ({max_audio_length/sample_rate:.2f} seconds)")
     
     logger.info(f"Max mel frames: {max_mel_frames}")
     

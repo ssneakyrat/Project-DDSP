@@ -49,6 +49,7 @@ def main():
         device='cuda' if torch.cuda.is_available() else 'cpu',
         collate_fn=standardized_collate_fn,  # Use the standardized collate function from utils.py
         n_harmonics=config['model']['n_harmonics'],
+        context_window_sec=config['model']['context_window_sec'],  # Pass context window from config
         seed=args.seed
     )
     
