@@ -331,3 +331,91 @@ def linear_lookup(index,
         mode='bilinear', 
         align_corners=True).squeeze(-1)
     return signal
+
+def create_formant_filter(formant_freqs, formant_widths, formant_gains, n_samples, sampling_rate):
+    """
+    Create a frequency response for a cascade of formant filters
+    
+    Args:
+        formant_freqs: [batch, time, n_formants] - Formant center frequencies in Hz
+        formant_widths: [batch, time, n_formants] - Formant bandwidths in Hz
+        formant_gains: [batch, time, n_formants] - Formant gains in dB
+        n_samples: Number of frequency samples
+        sampling_rate: Audio sampling rate in Hz
+        
+    Returns:
+        filter_response: [batch, time, n_samples] - Frequency response magnitude
+    """
+    batch_size, n_frames, n_formants = formant_freqs.shape
+    
+    # Create frequency axis (0 to Nyquist)
+    freqs = torch.linspace(0, sampling_rate/2, n_samples).to(formant_freqs.device)
+    freqs = freqs.view(1, 1, 1, -1).expand(batch_size, n_frames, n_formants, -1)
+    
+    # Convert formant parameters to the right shape
+    f0 = formant_freqs.unsqueeze(-1).expand(-1, -1, -1, n_samples)  # [b, t, formants, freqs]
+    bw = formant_widths.unsqueeze(-1).expand(-1, -1, -1, n_samples)  # [b, t, formants, freqs]
+    g = formant_gains.unsqueeze(-1).expand(-1, -1, -1, n_samples)    # [b, t, formants, freqs]
+    
+    # Second-order resonator transfer function
+    r = torch.exp(-math.pi * bw / sampling_rate)
+    theta = 2 * math.pi * f0 / sampling_rate
+    
+    # Compute filter response for each formant
+    re = 1 - 2 * r * torch.cos(theta) + r * r
+    im = -2 * r * torch.sin(theta)
+    
+    # Normalize and apply gain
+    norm = torch.sqrt(re * re + im * im)
+    response_re = re / norm
+    response_im = im / norm
+    
+    # Convert to magnitude and multiply by gain
+    mag = torch.pow(10, g/20) * torch.sqrt(response_re * response_re + response_im * response_im)
+    
+    # Combine formants by multiplication (cascade structure)
+    combined_mag = mag.prod(dim=2)  # [batch, time, freqs]
+    
+    return combined_mag
+
+def apply_vibrato(f0, vibrato_rate, vibrato_depth, vibrato_delay, sampling_rate):
+    """
+    Apply vibrato to f0 contour
+    
+    Args:
+        f0: [batch, n_samples, 1] - Fundamental frequency in Hz
+        vibrato_rate: [batch, n_frames, 1] - Vibrato rate in Hz
+        vibrato_depth: [batch, n_frames, 1] - Vibrato depth in cents
+        vibrato_delay: [batch, n_frames, 1] - Vibrato onset delay in seconds
+        sampling_rate: Sampling rate in Hz
+        
+    Returns:
+        f0_with_vibrato: [batch, n_samples, 1] - F0 with vibrato applied
+    """
+    batch_size, n_samples, _ = f0.shape
+    
+    # Upsample vibrato parameters to audio rate
+    block_size = n_samples // vibrato_rate.shape[1]
+    rate_up = upsample(vibrato_rate, block_size)
+    depth_up = upsample(vibrato_depth, block_size)
+    delay_up = upsample(vibrato_delay, block_size)
+    
+    # Create time vector
+    time = torch.arange(n_samples, device=f0.device) / sampling_rate
+    time = time.view(1, -1, 1).expand(batch_size, -1, 1)
+    
+    # Calculate delay mask (no vibrato during delay period)
+    delay_mask = (time >= delay_up).float()
+    
+    # Calculate vibrato oscillation
+    vibrato_phase = 2 * math.pi * rate_up * (time - delay_up)
+    vibrato_phase = vibrato_phase * delay_mask  # No phase accumulation during delay
+    
+    # Convert depth from cents to ratio (100 cents = 1 semitone = 2^(1/12))
+    depth_ratio = torch.pow(2, depth_up / 1200)  # Convert cents to frequency ratio
+    
+    # Apply vibrato
+    vibrato_mod = torch.sin(vibrato_phase)
+    f0_with_vibrato = f0 * (1.0 + (depth_ratio - 1.0) * vibrato_mod * delay_mask)
+    
+    return f0_with_vibrato
