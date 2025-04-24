@@ -25,13 +25,25 @@ model:
   use_gradient_checkpointing: false  # Enable to save memory
   
 loss:
+  # FFT sizes for multi-resolution spectral analysis
   n_ffts: [1024, 512, 256, 128]
-  use_mel_loss: false
-  mel_weight: 2.0  # Weight for mel spectrogram loss
-  use_mss_loss: true
-  use_f0_loss: true  
-  use_amplitude_loss: true
-  amplitude_weight: 0.5
+  
+  # Component enable/disable flags
+  use_mel_loss: false         # Mel-spectrogram based loss
+  use_mss_loss: true          # Multi-scale spectral loss
+  use_f0_loss: true           # Fundamental frequency loss
+  use_amplitude_loss: true    # Harmonic amplitude loss
+  use_sc_loss: true           # Spectral convergence loss (used with MSS)
+  
+  # Component weights
+  mel_weight: 1.0             # Weight for mel spectrogram loss
+  mss_weight: 1.0             # Weight for multi-scale spectral loss
+  f0_weight: 10.0              # Weight for fundamental frequency loss
+  amplitude_weight: 300.0       # Weight for harmonic amplitude loss
+  sc_weight: 1.0              # Weight for spectral convergence component
+  
+  # F0 configuration
+  f0_log_scale: true          # Use log scale for F0 (better for human perception)
 
 training:
   learning_rate: 0.002

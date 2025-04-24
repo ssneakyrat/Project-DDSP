@@ -396,7 +396,7 @@ class SingingVoiceDataset(torch.utils.data.Dataset):
         self.fmax = fmax
         
         # Multiprocessing parameters
-        self.num_workers = num_workers
+        self.num_workers = 8 #hardcoded
         self.batch_size = batch_size
         self.device = device
 

@@ -162,7 +162,6 @@ class Synth(nn.Module):
             formant_filter
         )
         
-        ''' disable this for now
         # Apply tension effect (nonlinear shaping for vocal "pressure")
         if torch.any(tension > 0.05):
             tension_up = upsample(tension, self.block_size).squeeze(-1)
@@ -180,18 +179,11 @@ class Synth(nn.Module):
         breathiness_up = upsample(breathiness, self.block_size).squeeze(-1)
         # Ensure breathiness doesn't completely eliminate noise in consonants
         scaled_noise = noise * (0.3 + 0.7 * breathiness_up)
-        '''
-        # Generate noise component with breathiness control
-        noise = torch.rand_like(harmonic).to(noise_param) * 2 - 1
-        noise = frequency_filter(
-            noise,
-            noise_param
-        )
-
+        
         # Combine components
-        signal = harmonic + noise
+        signal = harmonic + scaled_noise
 
-        return signal, f0, final_phase, (harmonic, noise, frame_rate_amplitudes)
+        return signal, f0, final_phase, (harmonic, scaled_noise, frame_rate_amplitudes)
     
     def set_gradient_checkpointing(self, enabled=True):
         """

@@ -38,15 +38,31 @@ class LightningModel(pl.LightningModule):
 
         # Initialize loss function with mel spectrogram loss
         self.loss_fn = HybridLoss(
+            # Component enable/disable flags
             use_mel_loss=config['loss'].get('use_mel_loss', False),
             use_mss_loss=config['loss'].get('use_mss_loss', True),
             use_f0_loss=config['loss'].get('use_f0_loss', True),
-            use_amplitude_loss=config['loss'].get('use_amplitude_loss', False),
-            amplitude_weight=config['loss'].get('amplitude_weight', 0.1),
+            use_amplitude_loss=config['loss'].get('use_amplitude_loss', True),
+            use_sc_loss=config['loss'].get('use_sc_loss', True),
+            
+            # FFT parameters
             n_ffts=config['loss']['n_ffts'],
+            
+            # Audio parameters
             sample_rate=config['model']['sample_rate'],
             n_mels=config['model']['n_mels'],
-            mel_weight=config['loss'].get('mel_weight', 0.5),
+            mel_fmin=config['model'].get('fmin', 40.0),
+            mel_fmax=config['model'].get('fmax', 12000.0),
+            
+            # Component weights
+            mel_weight=config['loss'].get('mel_weight', 2.0),
+            mss_weight=config['loss'].get('mss_weight', 1.0),
+            f0_weight=config['loss'].get('f0_weight', 0.1),
+            amplitude_weight=config['loss'].get('amplitude_weight', 0.5),
+            sc_weight=config['loss'].get('sc_weight', 0.5),
+            
+            # F0 configuration
+            f0_log_scale=config['loss'].get('f0_log_scale', True)
         )
         
         # Initialize automatic mixed precision scaler if needed
@@ -60,12 +76,25 @@ class LightningModel(pl.LightningModule):
         # Use mixed precision where available for training
         if self.use_mixed_precision and not self.trainer.precision.startswith("bf16"):
             with torch.cuda.amp.autocast():
-                # Forward
-                signal, f0_pred, _, _ = self(batch)
+                # Forward pass
+                signal, f0_pred, _, components = self(batch)
                 
-                # Compute Loss
+                # Extract harmonic amplitudes if amplitude loss is enabled
+                amplitudes_pred = None
+                if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
+                    # Extract amplitudes from components tuple
+                    harmonic, noise, amplitudes_pred = components
+                
+                # Compute loss with all components
                 loss_dict = self.loss_fn(
-                    signal, batch['audio'], f0_pred, batch['f0'], mel_input=batch['mel'])
+                    signal=signal, 
+                    audio=batch['audio'],
+                    f0_pred=f0_pred, 
+                    f0_true=batch['f0'],
+                    mel_input=batch.get('mel', None),
+                    amplitudes_pred=amplitudes_pred,
+                    amplitudes_true=batch.get('amplitudes', None)
+                )
                 
                 # Extract total loss
                 total_loss = loss_dict['loss']
@@ -76,13 +105,15 @@ class LightningModel(pl.LightningModule):
             # Extract harmonic amplitudes if amplitude loss is enabled
             amplitudes_pred = None
             if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
-                # This is a placeholder - you would need to extract actual amplitudes
+                # Extract amplitudes from components tuple
                 harmonic, noise, amplitudes_pred = components
             
-            # Compute Loss
+            # Compute loss with all components
             loss_dict = self.loss_fn(
-                signal, batch['audio'], 
-                f0_pred, batch['f0'], 
+                signal=signal, 
+                audio=batch['audio'],
+                f0_pred=f0_pred, 
+                f0_true=batch['f0'],
                 mel_input=batch.get('mel', None),
                 amplitudes_pred=amplitudes_pred,
                 amplitudes_true=batch.get('amplitudes', None)
@@ -93,14 +124,18 @@ class LightningModel(pl.LightningModule):
 
         # Log losses
         for loss_name, loss_value in loss_dict.items():
-            self.log(f'train_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
+            if loss_name != 'active_losses':  # Skip the active_losses string
+                show_in_prog = False
+                if loss_name != 'loss':
+                    show_in_prog = True
+                self.log(f'train_{loss_name}', loss_value, prog_bar=show_in_prog, batch_size=self.config['dataset']['batch_size'])
         
-        # Log audio occasionally
-        #if self.current_epoch % self.config['logging'].get('audio_log_every_n_epoch', 10) == 0 and batch_idx % 50 == 0:
-        #    self._log_audio(batch, signal, 'train')
-
+        # Log active loss components (useful for debugging)
+        if batch_idx == 0 and self.current_epoch % 10 == 0:
+            self.logger.experiment.add_text('active_losses', loss_dict.get('active_losses', ''), self.global_step)
+        
         return total_loss
-    
+
     def validation_step(self, batch, batch_idx):
         # Standard precision forward
         signal, f0_pred, _, components = self(batch)
@@ -108,13 +143,15 @@ class LightningModel(pl.LightningModule):
         # Extract harmonic amplitudes if amplitude loss is enabled
         amplitudes_pred = None
         if self.loss_fn.use_amplitude_loss and 'amplitudes' in batch:
-            # This is a placeholder - you would need to extract actual amplitudes
+            # Extract amplitudes from components tuple
             harmonic, noise, amplitudes_pred = components
         
-        # Compute Loss
+        # Compute loss with all components
         loss_dict = self.loss_fn(
-            signal, batch['audio'], 
-            f0_pred, batch['f0'], 
+            signal=signal, 
+            audio=batch['audio'],
+            f0_pred=f0_pred, 
+            f0_true=batch['f0'],
             mel_input=batch.get('mel', None),
             amplitudes_pred=amplitudes_pred,
             amplitudes_true=batch.get('amplitudes', None)
@@ -125,7 +162,11 @@ class LightningModel(pl.LightningModule):
         
         # Log losses
         for loss_name, loss_value in loss_dict.items():
-            self.log(f'val_{loss_name}', loss_value, prog_bar=True, batch_size=self.config['dataset']['batch_size'])
+            if loss_name != 'active_losses':  # Skip the active_losses string
+                show_in_prog = False
+                if loss_name != 'loss':
+                    show_in_prog = True
+                self.log(f'val_{loss_name}', loss_value, prog_bar=show_in_prog, batch_size=self.config['dataset']['batch_size'])
         
         # Log audio for first few batches
         if batch_idx < 3:  # Limit to save space
