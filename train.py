@@ -7,111 +7,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 
-from dataset import get_dataloader 
+from dataset import get_dataloader
+from utils import standardized_collate_fn
 from lightning_model import LightningModel
-
-def simplified_collate(batch):
-    """Robust collate function that handles tensors of different sizes."""
-    # Filter out any None values
-    batch = [x for x in batch if x is not None]
-    if not batch:
-        return None
-    
-    # Create dictionary for batched data
-    batch_dict = {}
-    
-    # Handle each key
-    for key in batch[0].keys():
-        if key == 'filename':
-            # For non-tensor data
-            batch_dict[key] = [sample[key] for sample in batch]
-        else:
-            # Check if all tensors have the same shape
-            shapes = [sample[key].shape for sample in batch]
-            if len(set(str(s) for s in shapes)) > 1:
-                # For handling different dimensions
-                if key in ['audio', 'phone_seq', 'f0_audio']:
-                    # Audio-aligned tensors should be 1D with length 48000
-                    target_size = 48000
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape[0] != target_size:
-                            if sample[key].shape[0] < target_size:
-                                # Pad
-                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
-                            else:
-                                # Truncate
-                                batch[i][key] = sample[key][:target_size]
-                
-                elif key in ['phone_seq_mel', 'f0']:
-                    # Mel-aligned 1D tensors
-                    target_size = 201  # 48000 // 240 + 1 (for 2-second audio with hop_length=240)
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape[0] != target_size:
-                            if sample[key].shape[0] < target_size:
-                                # Pad
-                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, target_size - sample[key].shape[0]))
-                            else:
-                                # Truncate
-                                batch[i][key] = sample[key][:target_size]
-                
-                elif key == 'mel':
-                    # Mel is 2D [frames, n_mels]
-                    target_frames = 201  # Same as mel-aligned 1D tensors
-                    n_mels = batch[0][key].shape[1]  # Keep n_mels dimension the same
-                    
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape[0] != target_frames:
-                            if sample[key].shape[0] < target_frames:
-                                # Pad
-                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
-                            else:
-                                # Truncate
-                                batch[i][key] = sample[key][:target_frames, :]
-                
-                elif key == 'amplitudes':
-                    # Amplitudes is 2D [frames, n_harmonics]
-                    target_frames = 201  # Same as mel-aligned tensors
-                    n_harmonics = batch[0][key].shape[1]  # Keep n_harmonics dimension the same
-                    
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape[0] != target_frames:
-                            if sample[key].shape[0] < target_frames:
-                                # Pad
-                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_frames - sample[key].shape[0]))
-                            else:
-                                # Truncate
-                                batch[i][key] = sample[key][:target_frames, :]
-                
-                elif key in ['phone_one_hot', 'phone_mel_one_hot']:
-                    # One-hot encoded tensors
-                    # Handle according to their specific dimensions
-                    # For phone_one_hot: [audio_length, n_phones]
-                    # For phone_mel_one_hot: [mel_frames, n_phones]
-                    
-                    if key == 'phone_one_hot':
-                        target_length = 48000
-                    else:  # phone_mel_one_hot
-                        target_length = 201
-                    
-                    n_classes = batch[0][key].shape[1]
-                    
-                    for i, sample in enumerate(batch):
-                        if sample[key].shape[0] != target_length:
-                            if sample[key].shape[0] < target_length:
-                                # Pad
-                                batch[i][key] = torch.nn.functional.pad(sample[key], (0, 0, 0, target_length - sample[key].shape[0]))
-                            else:
-                                # Truncate
-                                batch[i][key] = sample[key][:target_length, :]
-            
-            try:
-                # Stack the tensors after ensuring consistent shapes
-                batch_dict[key] = torch.stack([sample[key] for sample in batch])
-            except RuntimeError as e:
-                print(f"ERROR stacking {key} tensors. Shapes: {[sample[key].shape for sample in batch]}")
-                raise e
-    
-    return batch_dict
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train singing voice model')
@@ -140,7 +38,7 @@ def main():
     
     print("Creating separate train and validation datasets...")
     
-    # Create separate train and validation dataloaders
+    # Create separate train and validation dataloaders with standardized collate function
     train_loader, val_loader, train_dataset, val_dataset = get_dataloader(
         batch_size=config['dataset']['batch_size'],
         num_workers=config['dataset']['num_workers'],
@@ -149,13 +47,15 @@ def main():
         train_files=config['dataset'].get('train_files', None),
         val_files=config['dataset'].get('val_files', None),
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        collate_fn=simplified_collate,
+        collate_fn=standardized_collate_fn,  # Use the standardized collate function from utils.py
         n_harmonics=config['model']['n_harmonics'],
         seed=args.seed
     )
     
     print(f"Training dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
+    print(f"Max audio length: {train_dataset.max_audio_length} samples ({train_dataset.max_audio_length/train_dataset.sample_rate:.2f} seconds)")
+    print(f"Max mel frames: {train_dataset.max_mel_frames}")
     
     # Calculate len of phone map for model configuration (use train dataset for this)
     phone_map_len = len(train_dataset.phone_map) + 1  # +1 for padding
