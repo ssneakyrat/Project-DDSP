@@ -38,6 +38,7 @@ class S4Core(nn.Module):
             self.Lambda_im
         )
     
+    # Replace the current forward method in S4Core class with this:
     def forward(self, u, return_state=False):
         """
         Forward pass with cached convolution implementation.
@@ -52,7 +53,8 @@ class S4Core(nn.Module):
         # Get parameters and dimensions
         Lambda = self.get_Lambda()  # [d_state]
         B = self.B  # [d_state, 1]
-        C = torch.view_as_complex(self.C.permute(2, 0, 1).contiguous())  # [1, d_state]
+        # Fix: Don't permute, just view as complex directly
+        C = torch.view_as_complex(self.C)  # [1, d_state]
         D = self.D
         L = u.size(1)
         
@@ -76,6 +78,10 @@ class S4Core(nn.Module):
         
         # Apply convolution in Fourier domain for efficiency
         u_f = torch.fft.rfft(u.float(), n=2*L)
+
+        print( u_f.shape )
+        print( k_f.shape )
+
         y_f = u_f * k_f.unsqueeze(0).unsqueeze(-1)
         y = torch.fft.irfft(y_f, n=2*L)[..., :L]
         
