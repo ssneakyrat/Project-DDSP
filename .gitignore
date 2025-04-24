@@ -10,3 +10,4 @@ output/
 logs/
 checkpoints/
 *.ipynb
+lightning_model_old.py
