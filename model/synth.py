@@ -5,7 +5,8 @@ import numpy as np
 
 # Import the optimized modules
 from ddsp.modules import HarmonicOscillator
-from model.sing_vocoder import SingVocoder
+#from model.sing_vocoder import SingVocoder
+from model.s4_sing_vocoder import S4SingVocoder
 
 from ddsp.core import scale_function, unit_to_hz2, frequency_filter, upsample, create_formant_filter, apply_vibrato
 
@@ -36,7 +37,7 @@ class Synth(nn.Module):
         self.n_formants = n_formants
         
         # SingVocoder with enhanced formant modeling and singer adaptation
-        self.sing_vocoder = SingVocoder(
+        self.sing_vocoder = S4SingVocoder(
             phone_map_len=phone_map_len,
             singer_map_len=singer_map_len,
             language_map_len=language_map_len,
@@ -44,8 +45,7 @@ class Synth(nn.Module):
             n_harmonics=n_harmonics,
             n_mag_harmonic=n_mag_harmonic,
             n_mag_noise=n_mag_noise,
-            n_formants=n_formants,
-            use_checkpoint=use_gradient_checkpointing
+            n_formants=n_formants
         )
         
         self.harmonic_synthsizer = HarmonicOscillator(sampling_rate)
@@ -179,7 +179,7 @@ class Synth(nn.Module):
         breathiness_up = upsample(breathiness, self.block_size).squeeze(-1)
         # Ensure breathiness doesn't completely eliminate noise in consonants
         scaled_noise = noise * (0.3 + 0.7 * breathiness_up)
-        
+
         # Combine components
         signal = harmonic + scaled_noise
 
